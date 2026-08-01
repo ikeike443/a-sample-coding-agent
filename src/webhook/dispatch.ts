@@ -1,7 +1,8 @@
 import type { FastifyBaseLogger } from "fastify";
 
 import type { AppConfig } from "../config.js";
-import { DevinClient } from "../devin-client/index.js";
+import { DevinClient, type CreateSessionResult } from "../devin-client/index.js";
+import type { RunStore } from "../observability/index.js";
 import { REMEDIATE_LABEL, type NormalisedEvent } from "./normalize.js";
 
 export interface DispatchDeps {
@@ -60,13 +61,15 @@ export function buildTags(event: NormalisedEvent): string[] {
  * remediation session for the event.
  *
  * Failures are swallowed on purpose — the webhook has already answered `200`
- * and GitHub must not be asked to redeliver. Persisting the session id is the
- * observability store's job in a follow-up session.
+ * and GitHub must not be asked to redeliver. They are recorded in the
+ * observability store as `dispatch_failed` so that a Devin API outage is
+ * visible on the dashboard instead of only in the logs.
  */
 export async function dispatchToDevin(
   event: NormalisedEvent,
   logger: FastifyBaseLogger,
   deps?: DispatchDeps,
+  store?: RunStore,
 ): Promise<void> {
   const context = {
     deliveryId: event.deliveryId,
@@ -74,28 +77,60 @@ export async function dispatchToDevin(
     repository: event.repository,
     issueNumber: event.issueNumber,
   };
+  const tags = buildTags(event);
+  const run = store?.recordEvent({
+    issueRef: event.issueNumber ?? null,
+    triggerType: "webhook",
+    tags,
+  });
 
   if (!deps) {
-    logger.warn(context, "devin client not configured; skipping session creation");
+    const reason = "devin client not configured; skipping session creation";
+    if (run) {
+      store?.markDispatchFailed(run.runId, reason);
+    }
+    logger.warn({ ...context, runId: run?.runId }, reason);
     return;
   }
 
-  const tags = buildTags(event);
-
+  // Only the session creation belongs in the dispatch-failure path: a store or
+  // logging error afterwards must not label a running session as never dispatched.
+  let session: CreateSessionResult;
   try {
-    const session = await deps.client.createSession({
+    session = await deps.client.createSession({
       prompt: buildPrompt(event),
       tags,
       maxAcuLimit: deps.maxAcuLimit,
       // A retried POST /sessions must not start a second remediation run.
       idempotent: true,
     });
-
-    logger.info(
-      { ...context, sessionId: session.session_id, sessionUrl: session.url, tags },
-      "devin session created",
-    );
   } catch (error) {
-    logger.error({ ...context, err: error, tags }, "devin session creation failed");
+    if (run) {
+      store?.markDispatchFailed(run.runId, errorMessage(error));
+    }
+    logger.error(
+      { ...context, runId: run?.runId, err: error, tags },
+      "devin session creation failed",
+    );
+    return;
   }
+
+  if (run) {
+    store?.markWorking(run.runId, session.session_id);
+  }
+
+  logger.info(
+    {
+      ...context,
+      runId: run?.runId,
+      sessionId: session.session_id,
+      sessionUrl: session.url,
+      tags,
+    },
+    "devin session created",
+  );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

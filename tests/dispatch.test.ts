@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { DEFAULT_MAX_ACU_LIMIT, loadConfig } from "../src/config.js";
 import { DevinApiError, type DevinClient } from "../src/devin-client/index.js";
+import { SqliteRunStore } from "../src/observability/index.js";
 import { buildPrompt, buildTags, dispatchToDevin } from "../src/webhook/dispatch.js";
 import type { NormalisedEvent } from "../src/webhook/normalize.js";
 import { computeSignature } from "../src/webhook/signature.js";
@@ -106,6 +107,81 @@ describe("dispatchToDevin", () => {
       expect.objectContaining({ deliveryId: "delivery-1" }),
       "devin client not configured; skipping session creation",
     );
+  });
+});
+
+describe("dispatchToDevin observability records", () => {
+  it("records pending and then working once the session exists", async () => {
+    const store = new SqliteRunStore({ filename: ":memory:" });
+    const createSession = vi.fn(async () => ({ session_id: "devin-1" }));
+
+    await dispatchToDevin(event(), fakeLogger(), {
+      client: fakeClient(createSession),
+      maxAcuLimit: ACU_LIMIT,
+    }, store);
+
+    expect(store.listRuns()).toHaveLength(1);
+    expect(store.listRuns()[0]).toMatchObject({
+      issueRef: 42,
+      triggerType: "webhook",
+      status: "working",
+      sessionId: "devin-1",
+      tags: ["remediation", "trigger-webhook", "issue-42"],
+    });
+    store.close();
+  });
+
+  it("records dispatch_failed with the error when the Devin API call fails", async () => {
+    const store = new SqliteRunStore({ filename: ":memory:" });
+    const createSession = vi.fn(async () => {
+      throw new DevinApiError(500, "boom", "POST", "/sessions");
+    });
+
+    await dispatchToDevin(event(), fakeLogger(), {
+      client: fakeClient(createSession),
+      maxAcuLimit: ACU_LIMIT,
+    }, store);
+
+    expect(store.listRuns()[0]).toMatchObject({
+      status: "dispatch_failed",
+      sessionId: null,
+    });
+    expect(store.listRuns()[0]?.errorMessage).toContain("500");
+    store.close();
+  });
+
+  it("keeps a created session recorded when the store write afterwards throws", async () => {
+    const store = new SqliteRunStore({ filename: ":memory:" });
+    const markWorking = vi.spyOn(store, "markWorking").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+    const markDispatchFailed = vi.spyOn(store, "markDispatchFailed");
+    const createSession = vi.fn(async () => ({ session_id: "devin-1" }));
+
+    await expect(
+      dispatchToDevin(
+        event(),
+        fakeLogger(),
+        { client: fakeClient(createSession), maxAcuLimit: ACU_LIMIT },
+        store,
+      ),
+    ).rejects.toThrow("database is locked");
+
+    expect(markWorking).toHaveBeenCalledTimes(1);
+    expect(markDispatchFailed).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("records dispatch_failed when the Devin client is not configured", async () => {
+    const store = new SqliteRunStore({ filename: ":memory:" });
+
+    await dispatchToDevin(event(), fakeLogger(), undefined, store);
+
+    expect(store.listRuns()[0]).toMatchObject({
+      status: "dispatch_failed",
+      errorMessage: "devin client not configured; skipping session creation",
+    });
+    store.close();
   });
 });
 

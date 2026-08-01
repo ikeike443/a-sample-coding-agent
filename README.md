@@ -5,8 +5,8 @@ Pull Request events via webhooks, decides which Devin sessions to start, tracks 
 stores their outcomes (success rate, latency, cost) so they can be visualised on a dashboard.
 
 The HTTP server, directory layout, Docker setup, test harness and CI pipeline are in place, and the
-GitHub webhook intake and the Devin V3 API client are implemented. The observability store and
-dashboard are filled in during follow-up sessions.
+GitHub webhook intake, the Devin V3 API client and the observability layer (SQLite store, polling
+worker, metrics API) are implemented. The dashboard UI is filled in during a follow-up session.
 
 ## GitHub webhook intake
 
@@ -27,9 +27,11 @@ dashboard are filled in during follow-up sessions.
    without awaiting it, so the handler responds immediately. It builds a prompt from the issue and
    repository, creates a Devin session tagged
    `["remediation", "trigger-webhook", "issue-<number>"]` with `max_acu_limit` taken from
-   `DEVIN_MAX_ACU_LIMIT`, and logs the resulting `session_id`. If the Devin API call fails after all
-   retries the error is logged only: the webhook has already answered `200` so GitHub does not
-   redeliver.
+   `DEVIN_MAX_ACU_LIMIT`, and logs the resulting `session_id`. Every actionable delivery is recorded
+   in the observability store as `pending` before the call, then moved to `working` with the
+   `session_id`, or to `dispatch_failed` with the error message if the Devin API call fails after
+   all retries. The webhook has already answered `200` so GitHub does not redeliver; the failure is
+   visible on `GET /dashboard/metrics` instead of in the logs only.
 
 ## Technology choices
 
@@ -81,7 +83,7 @@ npm run build && npm start
 | ------ | -------------------- | ----------------------------------------- |
 | GET    | `/health`            | Implemented; 200 `{"status":"ok","uptime":n}` |
 | POST   | `/webhook/github`    | Implemented; HMAC-verified intake, dedupe, normalisation, Devin session creation |
-| GET    | `/dashboard/metrics` | Placeholder, returns empty metrics         |
+| GET    | `/dashboard/metrics` | Implemented; success rate, failure breakdown, MTTR, throughput, ACU cost |
 
 ## Layout and upcoming components
 
@@ -92,7 +94,7 @@ src/
   config.ts         environment variable loading
   webhook/          Issue/PR webhook intake
   devin-client/     Devin V3 API wrapper
-  observability/    state persistence and metrics
+  observability/    SQLite run store, metrics and polling worker
   dashboard/        dashboard UI / metrics API
 tests/              Vitest test suite
 ```
@@ -115,17 +117,76 @@ tests/              Vitest test suite
   2s, 4s, …). Other 4xx responses are raised immediately as a `DevinApiError` carrying the status
   and a truncated body. Every request carries an abort timeout (`DEVIN_REQUEST_TIMEOUT_MS`, 30s).
   Session creation from the webhook sets `idempotent: true` so a retried `POST /sessions` cannot
-  start a second remediation run.
-- **`src/observability/`**: SQLite persistence for events, sessions and outcomes, plus metrics such
-  as success rate, time to first response and ACU usage.
+  start a second remediation run. Each backoff delay carries ±20% jitter (`backoffDelay()`), so
+  concurrent clients retrying a failing Devin API do not hit it in lockstep.
+- **`src/observability/`**: implemented. SQLite persistence of runs, metric computation and the
+  background polling worker — see [Observability](#observability).
 - **`src/dashboard/`**: UI showing those metrics and the session list, and the JSON API behind it.
+
+## Observability
+
+### Data model
+
+`src/observability/store.ts` opens the SQLite database at `DATABASE_URL` (`file:` prefix optional,
+`:memory:` supported) via `better-sqlite3` and owns a single table:
+
+| Column                | Type    | Notes                                                                        |
+| --------------------- | ------- | ---------------------------------------------------------------------------- |
+| `run_id`              | TEXT PK | UUID generated when the event is detected                                     |
+| `issue_ref`           | INTEGER | GitHub issue number, nullable                                                 |
+| `trigger_type`        | TEXT    | `webhook` \| `schedule`                                                       |
+| `session_id`          | TEXT    | Devin session id; **null when the Devin API call itself failed**              |
+| `tags`                | TEXT    | JSON array of the session tags                                                |
+| `detected_at`         | TEXT    | ISO-8601, set on intake                                                       |
+| `session_started_at`  | TEXT    | ISO-8601, set when the session was created                                    |
+| `session_finished_at` | TEXT    | ISO-8601, set when the session reached a terminal state                       |
+| `status`              | TEXT    | `pending` \| `dispatch_failed` \| `working` \| `blocked` \| `finished` \| `failed` |
+| `pr_url`              | TEXT    | Pull request opened by the session, nullable                                  |
+| `pr_url_recorded_at`  | TEXT    | ISO-8601 stamp of when `pr_url` was first seen; the MTTR end point            |
+| `pr_merged_at`        | TEXT    | Always null today, see below                                                  |
+| `acu_cost`            | REAL    | `acus_consumed` reported by the Devin API, nullable                           |
+| `error_message`       | TEXT    | Dispatch or session error, nullable                                           |
+
+### Lifecycle
+
+1. `pending` — written by the webhook dispatcher as soon as an actionable delivery arrives.
+2. `dispatch_failed` — the Devin API rejected or never answered `POST /sessions` (or no Devin
+   credentials are configured). `session_id` stays null and `error_message` explains why.
+3. `working` — the session was created; `session_id` and `session_started_at` are stored.
+4. `blocked` / `finished` / `failed` — written by the polling worker from the Devin session status
+   (`suspended` → `blocked`, `exit` → `finished`, `error` → `failed`).
+
+### Polling worker
+
+`SessionPoller` (started from `src/index.ts`, interval `POLL_INTERVAL_MS`, 30s by default) calls
+`GET /sessions/{id}` for every `working` / `blocked` run and stores the new status, the ACU cost and
+the pull request URL (`pull_requests[0].pr_url`, falling back to `structured_output.pr_url`).
+Tracking stops at that point: the Devin API does not report whether the pull request was merged, so
+`pr_merged_at` stays null until a GitHub-side integration (polling the PR, or a `pull_request`
+`closed`/`merged` webhook) is added — that is deliberately out of scope for this session.
+
+### Metrics
+
+`computeMetrics()` aggregates the whole `runs` table and backs `GET /dashboard/metrics`:
+
+- **success rate** — runs with `status = finished` **and** a `pr_url`, divided by all runs;
+- **failure breakdown** — `dispatch_failed` and `failed` counts and rates reported separately, so a
+  broken dispatch path (Devin API down) is distinguishable from sessions that ran and failed;
+- **MTTR** — average of `pr_url_recorded_at - detected_at` over the runs that produced a PR;
+- **throughput** — `finished` runs in the last 24 hours;
+- **cost** — sum of `acu_cost`, with `estimated: true` and a note whenever some runs have no ACU
+  cost reported yet, in which case the total is a lower bound.
+
+```bash
+curl http://localhost:3000/dashboard/metrics
+```
 
 ## Environment variables
 
 See `.env.example`. Today `PORT`, `HOST`, `LOG_LEVEL`, `GITHUB_WEBHOOK_SECRET`, `DEVIN_API_KEY`,
 `DEVIN_ORG_ID` and the optional `WEBHOOK_DEDUPE_TTL_MS`, `DEVIN_API_BASE_URL`,
 `DEVIN_MAX_ACU_LIMIT`, `DEVIN_MAX_RETRIES`, `DEVIN_RETRY_INITIAL_DELAY_MS`,
-`DEVIN_REQUEST_TIMEOUT_MS` are actually used; the
+`DEVIN_REQUEST_TIMEOUT_MS`, `DATABASE_URL` and `POLL_INTERVAL_MS` are actually used; the
 rest are placeholders for the follow-up sessions. Without `DEVIN_API_KEY` / `DEVIN_ORG_ID` the
 webhook still runs and logs a warning instead of creating sessions.
 
@@ -136,4 +197,5 @@ pull request.
 
 ## Session tags
 
-`orchestrator-build`, `session-1-skeleton`, `session-2-webhook`, `session-3-devin-client`
+`orchestrator-build`, `session-1-skeleton`, `session-2-webhook`, `session-3-devin-client`,
+`session-4-observability`

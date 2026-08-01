@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { loadConfig, type AppConfig } from "../config.js";
 import type { DevinClient } from "../devin-client/index.js";
+import type { RunStore } from "../observability/index.js";
 import { TtlCache } from "./dedupe.js";
 import { createDevinClient, dispatchToDevin, type DispatchDeps } from "./dispatch.js";
 import { normaliseEvent } from "./normalize.js";
@@ -11,6 +12,7 @@ export interface WebhookRouteOptions {
   config?: AppConfig;
   /** Injected in tests; built from the configuration otherwise. */
   devinClient?: DevinClient;
+  store?: RunStore;
 }
 
 const DELIVERY_HEADER = "x-github-delivery";
@@ -88,7 +90,7 @@ export async function registerWebhookRoutes(
     }
 
     // Respond immediately; the dispatch runs outside the request lifecycle.
-    void dispatchToDevin(event, app.log, dispatchDeps).catch((error: unknown) => {
+    void dispatchToDevin(event, app.log, dispatchDeps, options.store).catch((error: unknown) => {
       app.log.error({ err: error, deliveryId }, "devin dispatch failed");
     });
 

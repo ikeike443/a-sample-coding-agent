@@ -6,8 +6,13 @@ async function main(): Promise<void> {
   const app = buildApp();
 
   const shutdown = async (): Promise<void> => {
-    await app.close();
-    process.exit(0);
+    try {
+      await app.close();
+      process.exit(0);
+    } catch (error) {
+      console.error(error);
+      process.exit(1);
+    }
   };
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGINT", () => void shutdown());

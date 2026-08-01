@@ -4,6 +4,7 @@ import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./devin-client/index.js";
+import { DEFAULT_POLL_INTERVAL_MS } from "./observability/index.js";
 import { DEFAULT_DEDUPE_TTL_MS } from "./webhook/dedupe.js";
 
 export interface AppConfig {
@@ -20,6 +21,8 @@ export interface AppConfig {
   devinMaxRetries: number;
   devinInitialRetryDelayMs: number;
   devinRequestTimeoutMs: number;
+  databasePath: string;
+  pollIntervalMs: number;
 }
 
 /** GitHub delivers webhook payloads of up to 25 MB. */
@@ -27,6 +30,13 @@ export const DEFAULT_BODY_LIMIT_BYTES = 25 * 1024 * 1024;
 
 /** Cap for a single remediation session, overridable via `DEVIN_MAX_ACU_LIMIT`. */
 export const DEFAULT_MAX_ACU_LIMIT = 10;
+
+export const DEFAULT_DATABASE_URL = "file:./data/orchestrator.sqlite";
+
+/** `DATABASE_URL` accepts both `file:/path/db.sqlite` and a bare path. */
+export function databasePathFromUrl(url: string): string {
+  return url.startsWith("file:") ? url.slice("file:".length) : url;
+}
 
 function boundedNumber(value: string | undefined, fallback: number, minimum: number): number {
   const parsed = Number(value);
@@ -60,5 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       DEFAULT_INITIAL_RETRY_DELAY_MS,
     ),
     devinRequestTimeoutMs: positiveNumber(env.DEVIN_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
+    databasePath: databasePathFromUrl(env.DATABASE_URL ?? DEFAULT_DATABASE_URL),
+    pollIntervalMs: positiveNumber(env.POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS),
   };
 }

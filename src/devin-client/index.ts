@@ -12,6 +12,9 @@ export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_INITIAL_RETRY_DELAY_MS = 1000;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
+/** Backoff delays are spread by ±20% so retries of concurrent calls do not align. */
+export const RETRY_JITTER_RATIO = 0.2;
+
 /** Upstream error bodies are echoed into logs, so only a prefix is kept. */
 const MAX_ERROR_BODY_LENGTH = 500;
 const TOO_MANY_REQUESTS = 429;
@@ -72,6 +75,8 @@ export interface DevinClientOptions {
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** Injected in tests; `Math.random` otherwise. */
+  random?: () => number;
 }
 
 /** Error raised when the Devin API answers with a non-2xx status. */
@@ -96,6 +101,19 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Exponential backoff with full ±`RETRY_JITTER_RATIO` jitter: without it every
+ * client retrying a failing Devin API hits it again at the same instant.
+ */
+export function backoffDelay(
+  initialDelayMs: number,
+  attempt: number,
+  random: () => number = Math.random,
+): number {
+  const base = initialDelayMs * 2 ** attempt;
+  return Math.round(base * (1 + (random() * 2 - 1) * RETRY_JITTER_RATIO));
+}
+
 function isRetryable(error: unknown): boolean {
   return error instanceof DevinApiError ? error.retryable : true;
 }
@@ -103,6 +121,7 @@ function isRetryable(error: unknown): boolean {
 export class DevinClient {
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly random: () => number;
 
   constructor(private readonly options: DevinClientOptions) {
     if (!options.apiKey) {
@@ -114,6 +133,7 @@ export class DevinClient {
 
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.sleep = options.sleep ?? defaultSleep;
+    this.random = options.random ?? Math.random;
   }
 
   /** Organisation-scoped base URL, e.g. `https://api.devin.ai/v3/organizations/org-x`. */
@@ -148,7 +168,8 @@ export class DevinClient {
 
   /**
    * Performs the HTTP call, retrying network failures, 5xx responses and 429
-   * with an exponential backoff. Other 4xx responses are surfaced immediately.
+   * with a jittered exponential backoff. Other 4xx responses are surfaced
+   * immediately.
    */
   private async request<T>(
     method: string,
@@ -169,7 +190,7 @@ export class DevinClient {
           throw error;
         }
 
-        await this.sleep(initialDelay * 2 ** attempt);
+        await this.sleep(backoffDelay(initialDelay, attempt, this.random));
       }
     }
 

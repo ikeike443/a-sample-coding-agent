@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DevinApiError, DevinClient } from "../src/devin-client/index.js";
+import {
+  DevinApiError,
+  DevinClient,
+  RETRY_JITTER_RATIO,
+  backoffDelay,
+} from "../src/devin-client/index.js";
 
 const API_KEY = "test-api-key";
 const ORG_ID = "org-test";
@@ -19,7 +24,12 @@ interface ClientHarness {
   delays: number[];
 }
 
-function harness(responses: Array<Response | Error>, maxRetries = 3): ClientHarness {
+/** `random: () => 0.5` cancels the jitter, keeping delay assertions exact. */
+function harness(
+  responses: Array<Response | Error>,
+  maxRetries = 3,
+  random: () => number = () => 0.5,
+): ClientHarness {
   const queue = [...responses];
   const fetchImpl = vi.fn(async () => {
     const next = queue.shift();
@@ -43,6 +53,7 @@ function harness(responses: Array<Response | Error>, maxRetries = 3): ClientHarn
     sleep: async (ms: number) => {
       delays.push(ms);
     },
+    random,
   });
 
   return { client, fetchImpl, delays };
@@ -130,6 +141,41 @@ describe("DevinClient.sendMessage", () => {
     const [url, init] = callArgs(fetchImpl);
     expect(url).toBe(`${BASE_URL}/organizations/${ORG_ID}/sessions/devin-1/messages`);
     expect(JSON.parse(init.body as string)).toEqual({ message: "any update?" });
+  });
+});
+
+describe("retry backoff jitter", () => {
+  it("keeps the exponential base and spreads it by at most \u00b120%", () => {
+    for (const attempt of [0, 1, 2]) {
+      const base = 1000 * 2 ** attempt;
+      expect(backoffDelay(1000, attempt, () => 0.5)).toBe(base);
+      expect(backoffDelay(1000, attempt, () => 0)).toBe(base * (1 - RETRY_JITTER_RATIO));
+      expect(backoffDelay(1000, attempt, () => 1)).toBe(base * (1 + RETRY_JITTER_RATIO));
+    }
+  });
+
+  it("produces different delays for the same attempt", () => {
+    const delays = new Set(
+      Array.from({ length: 50 }, () => backoffDelay(1000, 1, Math.random)),
+    );
+
+    expect(delays.size).toBeGreaterThan(1);
+    for (const delay of delays) {
+      expect(delay).toBeGreaterThanOrEqual(1600);
+      expect(delay).toBeLessThanOrEqual(2400);
+    }
+  });
+
+  it("applies the jitter to the delays the client actually sleeps", async () => {
+    const { client, delays } = harness(
+      [jsonResponse(500, { error: "boom" }), jsonResponse(200, { session_id: "devin-1" })],
+      3,
+      () => 0,
+    );
+
+    await client.createSession({ prompt: "hi" });
+
+    expect(delays).toEqual([800]);
   });
 });
 

@@ -1,14 +1,18 @@
 import type { FastifyInstance } from "fastify";
 
-import { emptyMetrics } from "../observability/index.js";
+import { computeMetrics, type RunStore } from "../observability/index.js";
+
+export interface DashboardRouteOptions {
+  store: RunStore;
+}
 
 /**
- * Dashboard UI showing orchestrator activity and metrics.
- *
- * Planned for a follow-up session:
- * - HTML/SPA view of sessions, events and metrics
- * - JSON API consumed by the UI
+ * Dashboard API. `GET /dashboard/metrics` serves the aggregated run metrics;
+ * the HTML view consuming them lands in a follow-up session.
  */
-export async function registerDashboardRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/metrics", async () => emptyMetrics());
+export async function registerDashboardRoutes(
+  app: FastifyInstance,
+  options: DashboardRouteOptions,
+): Promise<void> {
+  app.get("/metrics", async () => computeMetrics(options.store.listRuns()));
 }

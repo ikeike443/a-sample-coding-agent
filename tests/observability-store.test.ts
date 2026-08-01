@@ -1,0 +1,125 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { SqliteRunStore } from "../src/observability/index.js";
+
+const stores: SqliteRunStore[] = [];
+
+function store(now?: () => Date): SqliteRunStore {
+  const created = new SqliteRunStore({ filename: ":memory:", now });
+  stores.push(created);
+  return created;
+}
+
+afterEach(() => {
+  while (stores.length > 0) {
+    stores.pop()?.close();
+  }
+});
+
+describe("SqliteRunStore state transitions", () => {
+  it("records a webhook event as pending", () => {
+    const runs = store(() => new Date("2026-01-01T00:00:00.000Z"));
+
+    const run = runs.recordEvent({
+      issueRef: 42,
+      triggerType: "webhook",
+      tags: ["remediation", "issue-42"],
+    });
+
+    expect(run).toMatchObject({
+      issueRef: 42,
+      triggerType: "webhook",
+      status: "pending",
+      sessionId: null,
+      detectedAt: "2026-01-01T00:00:00.000Z",
+      prUrl: null,
+      prMergedAt: null,
+      errorMessage: null,
+    });
+    expect(runs.getRun(run.runId)).toEqual({ ...run, tags: ["remediation", "issue-42"] });
+  });
+
+  it("moves pending -> dispatch_failed and keeps the error message without a session id", () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+
+    const updated = runs.markDispatchFailed(run.runId, "Devin API POST /sessions failed: 500");
+
+    expect(updated).toMatchObject({
+      status: "dispatch_failed",
+      sessionId: null,
+      errorMessage: "Devin API POST /sessions failed: 500",
+    });
+  });
+
+  it("moves pending -> working when the session is created", () => {
+    const runs = store(() => new Date("2026-01-01T00:05:00.000Z"));
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+
+    const updated = runs.markWorking(run.runId, "devin-123");
+
+    expect(updated).toMatchObject({
+      status: "working",
+      sessionId: "devin-123",
+      sessionStartedAt: "2026-01-01T00:05:00.000Z",
+    });
+    expect(runs.listActiveRuns().map((r) => r.runId)).toEqual([run.runId]);
+  });
+
+  it("moves working -> finished and stamps the pull request URL", () => {
+    const now = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = store(now);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(run.runId, "devin-123");
+    now.mockReturnValue(new Date("2026-01-01T01:00:00.000Z"));
+
+    const updated = runs.applySessionUpdate(run.runId, {
+      status: "finished",
+      prUrl: "https://github.com/o/r/pull/9",
+      acuCost: 3.5,
+    });
+
+    expect(updated).toMatchObject({
+      status: "finished",
+      prUrl: "https://github.com/o/r/pull/9",
+      prUrlRecordedAt: "2026-01-01T01:00:00.000Z",
+      sessionFinishedAt: "2026-01-01T01:00:00.000Z",
+      acuCost: 3.5,
+      prMergedAt: null,
+    });
+    expect(runs.listActiveRuns()).toEqual([]);
+  });
+
+  it("keeps a session that failed after creation distinguishable from a failed dispatch", () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(run.runId, "devin-123");
+
+    const updated = runs.applySessionUpdate(run.runId, {
+      status: "failed",
+      errorMessage: "session ended in error",
+    });
+
+    expect(updated).toMatchObject({
+      status: "failed",
+      sessionId: "devin-123",
+      errorMessage: "session ended in error",
+    });
+  });
+
+  it("polls blocked runs and keeps an already recorded pr_url", () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "schedule", issueRef: null });
+    runs.markWorking(run.runId, "devin-123");
+    runs.applySessionUpdate(run.runId, {
+      status: "blocked",
+      prUrl: "https://github.com/o/r/pull/9",
+    });
+
+    expect(runs.listActiveRuns().map((r) => r.status)).toEqual(["blocked"]);
+    expect(runs.applySessionUpdate(run.runId, { status: "finished" })).toMatchObject({
+      status: "finished",
+      prUrl: "https://github.com/o/r/pull/9",
+    });
+  });
+});

@@ -1,16 +1,37 @@
 /**
  * Persistence of orchestrator state and computation of metrics.
  *
- * Planned for a follow-up session:
- * - SQLite-backed store for events, sessions and their outcomes
- * - metrics such as success rate, time-to-first-response and ACU usage
- * - export of metrics for the dashboard
+ * - `store.ts`: SQLite-backed `runs` table tracking every detected event, the
+ *   Devin session it created (if any) and its outcome.
+ * - `metrics.ts`: success rate, failure breakdown, MTTR, throughput and cost.
+ * - `poller.ts`: background worker refreshing active runs from the Devin API.
  */
-export interface OrchestratorMetrics {
-  totalEvents: number;
-  totalSessions: number;
-}
+export {
+  ACTIVE_STATUSES,
+  SqliteRunStore,
+  type RecordEventInput,
+  type RunRecord,
+  type RunStatus,
+  type RunStore,
+  type SessionUpdate,
+  type SqliteRunStoreOptions,
+  type TriggerType,
+} from "./store.js";
 
-export function emptyMetrics(): OrchestratorMetrics {
-  return { totalEvents: 0, totalSessions: 0 };
-}
+export {
+  computeMetrics,
+  isSuccessful,
+  type CostSummary,
+  type FailureBreakdown,
+  type OrchestratorMetrics,
+} from "./metrics.js";
+
+export {
+  DEFAULT_POLL_INTERVAL_MS,
+  SessionPoller,
+  buildSessionUpdate,
+  extractPrUrl,
+  mapSessionStatus,
+  type PollerLogger,
+  type SessionPollerOptions,
+} from "./poller.js";

@@ -20,12 +20,29 @@ export interface CostSummary {
   note: string;
 }
 
+/**
+ * Split of the runs Devin completed on its own, plus the ones it stopped on.
+ *
+ * `noActionNeeded` used to be counted as a failure because the old success rate
+ * only looked for a pull request URL.
+ */
+export interface OutcomeBreakdown {
+  /** Finished with a pull request. */
+  remediated: number;
+  /** Finished after concluding no change was required. */
+  noActionNeeded: number;
+  /** Stopped waiting for a human decision. */
+  needsHumanAttention: number;
+}
+
 export interface OrchestratorMetrics {
   generatedAt: string;
   totalRuns: number;
   statusCounts: Record<RunStatus, number>;
+  /** (remediated + noActionNeeded) / totalRuns — did Devin complete normally? */
   successRate: number;
   successfulRuns: number;
+  outcomes: OutcomeBreakdown;
   failureBreakdown: FailureBreakdown;
   mttrMs: number | null;
   mttrSampleSize: number;
@@ -38,6 +55,7 @@ const STATUSES: RunStatus[] = [
   "dispatch_failed",
   "working",
   "blocked",
+  "needs_human_attention",
   "finished",
   "failed",
 ];
@@ -58,9 +76,34 @@ function timestamp(value: string | null): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-/** A run counts as successful when it finished *and* produced a pull request. */
+/**
+ * Finished with a pull request. Runs recorded before sessions reported an
+ * outcome are classified by their pull request URL alone.
+ */
+export function isRemediated(run: RunRecord): boolean {
+  if (run.status !== "finished") {
+    return false;
+  }
+
+  return run.outcome === null ? run.prUrl !== null : run.outcome === "pr_created";
+}
+
+/** Finished after Devin concluded that no change was required. */
+export function isNoActionNeeded(run: RunRecord): boolean {
+  return run.status === "finished" && run.outcome === "no_action_needed";
+}
+
+/** Waiting on a human rather than progressing. */
+export function needsHumanAttention(run: RunRecord): boolean {
+  return run.status === "needs_human_attention";
+}
+
+/**
+ * A run counts as successful when Devin completed it on its own — either with a
+ * pull request or with a deliberate "nothing to fix" conclusion.
+ */
 export function isSuccessful(run: RunRecord): boolean {
-  return run.status === "finished" && run.prUrl !== null;
+  return isRemediated(run) || isNoActionNeeded(run);
 }
 
 /**
@@ -72,7 +115,8 @@ export function isSuccessful(run: RunRecord): boolean {
  */
 export function computeMetrics(runs: RunRecord[], now: Date = new Date()): OrchestratorMetrics {
   const statusCounts = emptyStatusCounts();
-  let successfulRuns = 0;
+  let remediated = 0;
+  let noActionNeeded = 0;
   let mttrTotalMs = 0;
   let mttrSampleSize = 0;
   let throughputLast24h = 0;
@@ -82,8 +126,10 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
   for (const run of runs) {
     statusCounts[run.status] += 1;
 
-    if (isSuccessful(run)) {
-      successfulRuns += 1;
+    if (isRemediated(run)) {
+      remediated += 1;
+    } else if (isNoActionNeeded(run)) {
+      noActionNeeded += 1;
     }
 
     const detectedAt = timestamp(run.detectedAt);
@@ -106,6 +152,7 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
 
   const totalRuns = runs.length;
   const runsWithoutCost = totalRuns - runsWithCost;
+  const successfulRuns = remediated + noActionNeeded;
 
   return {
     generatedAt: now.toISOString(),
@@ -113,6 +160,11 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
     statusCounts,
     successRate: ratio(successfulRuns, totalRuns),
     successfulRuns,
+    outcomes: {
+      remediated,
+      noActionNeeded,
+      needsHumanAttention: statusCounts.needs_human_attention,
+    },
     failureBreakdown: {
       dispatchFailed: statusCounts.dispatch_failed,
       dispatchFailedRate: ratio(statusCounts.dispatch_failed, totalRuns),

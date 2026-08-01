@@ -4,6 +4,9 @@ import { mkdirSync } from "node:fs";
 
 import Database from "better-sqlite3";
 
+import type { RemediationOutcome } from "../devin-client/remediation.js";
+import { isRemediationOutcome } from "../devin-client/remediation.js";
+
 export type TriggerType = "webhook" | "schedule";
 
 /**
@@ -12,12 +15,17 @@ export type TriggerType = "webhook" | "schedule";
  * `dispatch_failed` covers failures that happen *before* a session exists (the
  * Devin API rejected or never answered `POST /sessions`), which is what makes a
  * broken dispatch path visible on the dashboard instead of log-only.
+ *
+ * `needs_human_attention` is a session that has been `blocked` past the grace
+ * period without ever reporting a structured output, i.e. one that is most
+ * likely waiting on a human rather than still working.
  */
 export type RunStatus =
   | "pending"
   | "dispatch_failed"
   | "working"
   | "blocked"
+  | "needs_human_attention"
   | "finished"
   | "failed";
 
@@ -36,6 +44,10 @@ export interface RunRecord {
   prMergedAt: string | null;
   acuCost: number | null;
   errorMessage: string | null;
+  /** Outcome reported by the session's structured output, if any. */
+  outcome: RemediationOutcome | null;
+  /** When the run first entered a blocked state; cleared once it leaves it. */
+  blockedSince: string | null;
 }
 
 export interface RecordEventInput {
@@ -52,6 +64,7 @@ export interface SessionUpdate {
   acuCost?: number | null;
   errorMessage?: string | null;
   sessionFinishedAt?: string | null;
+  outcome?: RemediationOutcome | null;
 }
 
 export interface RunStore {
@@ -80,6 +93,8 @@ interface RunRow {
   pr_merged_at: string | null;
   acu_cost: number | null;
   error_message: string | null;
+  outcome: string | null;
+  blocked_since: string | null;
 }
 
 const SCHEMA = `
@@ -97,14 +112,23 @@ CREATE TABLE IF NOT EXISTS runs (
   pr_url_recorded_at TEXT,
   pr_merged_at       TEXT,
   acu_cost           REAL,
-  error_message      TEXT
+  error_message      TEXT,
+  outcome            TEXT,
+  blocked_since      TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
 CREATE INDEX IF NOT EXISTS runs_detected_at_idx ON runs (detected_at);
 `;
 
-/** Statuses the polling worker keeps asking the Devin API about. */
-export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked"];
+/**
+ * Statuses the polling worker keeps asking the Devin API about.
+ * `needs_human_attention` stays in the list: a human may answer the session and
+ * it then has to be able to reach a terminal status.
+ */
+export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_attention"];
+
+/** Statuses in which a run counts as waiting rather than progressing. */
+const BLOCKED_STATUSES: RunStatus[] = ["blocked", "needs_human_attention"];
 
 function toRecord(row: RunRow): RunRecord {
   return {
@@ -122,6 +146,8 @@ function toRecord(row: RunRow): RunRecord {
     prMergedAt: row.pr_merged_at,
     acuCost: row.acu_cost,
     errorMessage: row.error_message,
+    outcome: isRemediationOutcome(row.outcome) ? row.outcome : null,
+    blockedSince: row.blocked_since,
   };
 }
 
@@ -154,7 +180,23 @@ export class SqliteRunStore implements RunStore {
     this.db = new Database(filename);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.migrate();
     this.now = options.now ?? (() => new Date());
+  }
+
+  /** Adds columns introduced after the first release to pre-existing databases. */
+  private migrate(): void {
+    const columns = new Set(
+      (this.db.prepare(`PRAGMA table_info(runs)`).all() as { name: string }[]).map(
+        (column) => column.name,
+      ),
+    );
+
+    for (const column of ["outcome", "blocked_since"]) {
+      if (!columns.has(column)) {
+        this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} TEXT`);
+      }
+    }
   }
 
   private timestamp(): string {
@@ -177,6 +219,8 @@ export class SqliteRunStore implements RunStore {
       prMergedAt: null,
       acuCost: null,
       errorMessage: null,
+      outcome: null,
+      blockedSince: null,
     };
 
     this.db
@@ -212,7 +256,7 @@ export class SqliteRunStore implements RunStore {
       .prepare(
         `UPDATE runs
          SET status = 'working', session_id = @sessionId, session_started_at = @startedAt,
-             error_message = NULL
+             error_message = NULL, blocked_since = NULL
          WHERE run_id = @runId`,
       )
       .run({ runId, sessionId, startedAt: this.timestamp() });
@@ -229,6 +273,7 @@ export class SqliteRunStore implements RunStore {
 
     const prUrl = update.prUrl ?? current.prUrl;
     const isTerminal = update.status === "finished" || update.status === "failed";
+    const isBlocked = BLOCKED_STATUSES.includes(update.status);
 
     this.db
       .prepare(
@@ -238,13 +283,19 @@ export class SqliteRunStore implements RunStore {
              pr_url_recorded_at = @prUrlRecordedAt,
              acu_cost = @acuCost,
              error_message = @errorMessage,
-             session_finished_at = @sessionFinishedAt
+             session_finished_at = @sessionFinishedAt,
+             outcome = @outcome,
+             blocked_since = @blockedSince
          WHERE run_id = @runId`,
       )
       .run({
         runId,
         status: update.status,
         prUrl,
+        outcome: update.outcome ?? current.outcome,
+        // The blocked clock starts at the first blocked poll and survives
+        // subsequent blocked polls, so the grace period measures the whole stall.
+        blockedSince: isBlocked ? (current.blockedSince ?? this.timestamp()) : null,
         prUrlRecordedAt:
           current.prUrlRecordedAt ?? (prUrl !== null && prUrl !== undefined ? this.timestamp() : null),
         acuCost: update.acuCost ?? current.acuCost,

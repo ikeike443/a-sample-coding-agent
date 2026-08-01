@@ -20,13 +20,18 @@ export {
 
 export {
   computeMetrics,
+  isNoActionNeeded,
+  isRemediated,
   isSuccessful,
+  needsHumanAttention,
   type CostSummary,
   type FailureBreakdown,
   type OrchestratorMetrics,
+  type OutcomeBreakdown,
 } from "./metrics.js";
 
 export {
+  DEFAULT_BLOCKED_GRACE_MS,
   DEFAULT_POLL_INTERVAL_MS,
   SessionPoller,
   buildSessionUpdate,
@@ -34,4 +39,5 @@ export {
   mapSessionStatus,
   type PollerLogger,
   type SessionPollerOptions,
+  type SessionUpdateContext,
 } from "./poller.js";

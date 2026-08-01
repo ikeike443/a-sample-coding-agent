@@ -51,6 +51,7 @@ const STATUS_TONES: Record<RunStatus, StatusTone> = {
   finished: "success",
   working: "progress",
   blocked: "progress",
+  needs_human_attention: "danger",
   dispatch_failed: "danger",
   failed: "danger",
   pending: "neutral",
@@ -60,6 +61,7 @@ const STATUS_LABELS: Record<RunStatus, string> = {
   finished: "Finished",
   working: "Working",
   blocked: "Blocked",
+  needs_human_attention: "Needs human attention",
   dispatch_failed: "Dispatch failed",
   failed: "Failed",
   pending: "Pending",
@@ -140,15 +142,36 @@ function successTone(rate: number, totalRuns: number): StatusTone {
 
 /** Cards shown at the top of the dashboard, in display order. */
 export function buildSummaryCards(metrics: OrchestratorMetrics): SummaryCard[] {
-  const { failureBreakdown: failures, cost } = metrics;
+  const { failureBreakdown: failures, outcomes, cost } = metrics;
 
   return [
     {
       id: "success-rate",
       label: "Success rate",
       value: formatPercent(metrics.successRate),
-      detail: `${metrics.successfulRuns} of ${metrics.totalRuns} run(s) finished with a pull request`,
+      detail: `${metrics.successfulRuns} of ${metrics.totalRuns} run(s) completed by Devin (${outcomes.remediated} remediated + ${outcomes.noActionNeeded} no action needed)`,
       tone: successTone(metrics.successRate, metrics.totalRuns),
+    },
+    {
+      id: "remediated",
+      label: "Remediated",
+      value: `${outcomes.remediated}`,
+      detail: "Runs finished with a pull request",
+      tone: "success",
+    },
+    {
+      id: "no-action-needed",
+      label: "No action needed",
+      value: `${outcomes.noActionNeeded}`,
+      detail: "Runs finished with nothing to fix — a valid completion, not a failure",
+      tone: "success",
+    },
+    {
+      id: "needs-human-attention",
+      label: "Needs human attention",
+      value: `${outcomes.needsHumanAttention}`,
+      detail: "Runs stalled waiting for a human decision",
+      tone: outcomes.needsHumanAttention > 0 ? "danger" : "success",
     },
     {
       id: "dispatch-failed",

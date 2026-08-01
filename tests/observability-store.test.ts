@@ -117,9 +117,33 @@ describe("SqliteRunStore state transitions", () => {
     });
 
     expect(runs.listActiveRuns().map((r) => r.status)).toEqual(["blocked"]);
+    expect(runs.getRun(run.runId)?.blockedSince).not.toBeNull();
     expect(runs.applySessionUpdate(run.runId, { status: "finished" })).toMatchObject({
       status: "finished",
       prUrl: "https://github.com/o/r/pull/9",
+      blockedSince: null,
     });
+  });
+
+  it("keeps the blocked clock across blocked polls and stores the reported outcome", () => {
+    const now = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = store(now);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(run.runId, "devin-123");
+
+    runs.applySessionUpdate(run.runId, { status: "blocked" });
+    now.mockReturnValue(new Date("2026-01-01T00:10:00.000Z"));
+    const stillBlocked = runs.applySessionUpdate(run.runId, { status: "needs_human_attention" });
+
+    expect(stillBlocked).toMatchObject({
+      status: "needs_human_attention",
+      blockedSince: "2026-01-01T00:00:00.000Z",
+      sessionFinishedAt: null,
+    });
+    expect(runs.listActiveRuns().map((r) => r.runId)).toEqual([run.runId]);
+
+    expect(
+      runs.applySessionUpdate(run.runId, { status: "finished", outcome: "no_action_needed" }),
+    ).toMatchObject({ status: "finished", outcome: "no_action_needed", blockedSince: null });
   });
 });

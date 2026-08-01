@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   DevinApiError,
   DevinClient,
+  REMEDIATION_STRUCTURED_OUTPUT_SCHEMA,
   RETRY_JITTER_RATIO,
   backoffDelay,
+  parseRemediationOutcome,
 } from "../src/devin-client/index.js";
 
 const API_KEY = "test-api-key";
@@ -106,6 +108,47 @@ describe("DevinClient.createSession", () => {
     await client.createSession({ prompt: "hello" });
 
     expect(callArgs(fetchImpl)[1].signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("DevinClient.createRemediationSession", () => {
+  it("always requires the remediation structured output", async () => {
+    const { client, fetchImpl } = harness([jsonResponse(200, { session_id: "devin-1" })]);
+
+    await client.createRemediationSession({ prompt: "fix issue #42", maxAcuLimit: 5 });
+
+    const body = JSON.parse(callArgs(fetchImpl)[1].body as string) as Record<string, unknown>;
+    expect(body.structured_output_required).toBe(true);
+    expect(body.structured_output_schema).toEqual(REMEDIATION_STRUCTURED_OUTPUT_SCHEMA);
+  });
+
+  it("declares the outcome enum, the summary and a nullable pr_url", () => {
+    const schema = REMEDIATION_STRUCTURED_OUTPUT_SCHEMA as {
+      required: string[];
+      properties: {
+        outcome: { enum: string[] };
+        summary: { type: string };
+        pr_url: { type: string[] };
+      };
+    };
+
+    expect(schema.required).toEqual(["outcome", "summary"]);
+    expect(schema.properties.outcome.enum).toEqual([
+      "pr_created",
+      "no_action_needed",
+      "blocked_on_question",
+    ]);
+    expect(schema.properties.summary.type).toBe("string");
+    expect(schema.properties.pr_url.type).toEqual(["string", "null"]);
+  });
+});
+
+describe("parseRemediationOutcome", () => {
+  it("reads a known outcome and rejects anything else", () => {
+    expect(parseRemediationOutcome({ outcome: "no_action_needed" })).toBe("no_action_needed");
+    expect(parseRemediationOutcome({ outcome: "something-else" })).toBeNull();
+    expect(parseRemediationOutcome({ summary: "no outcome" })).toBeNull();
+    expect(parseRemediationOutcome(null)).toBeNull();
   });
 });
 

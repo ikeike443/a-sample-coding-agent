@@ -85,6 +85,17 @@ export async function registerWebhookRoutes(
       "github webhook received",
     );
 
+    if (event.issueClosed && event.issueNumber !== undefined) {
+      const closed = options.store?.markIssueClosed(event.issueNumber) ?? [];
+      request.log.info(
+        { deliveryId, issueNumber: event.issueNumber, runs: closed.map((run) => run.runId) },
+        "issue closed; runs closed out",
+      );
+      return reply
+        .code(200)
+        .send({ status: "issue_closed", issueNumber: event.issueNumber, runs: closed.length });
+    }
+
     if (!event.actionable) {
       return reply.code(200).send({ status: "ignored", reason: event.reason });
     }

@@ -12,6 +12,8 @@ export interface NormalisedEvent {
   issueNumber?: number;
   labels: string[];
   actionable: boolean;
+  /** The delivery reports the issue as closed, so its runs can be closed out. */
+  issueClosed: boolean;
   reason: string;
 }
 
@@ -52,7 +54,8 @@ export function isSupportedEvent(event: string): event is SupportedEvent {
  * decides whether it should be handed to the Devin client.
  *
  * Only `issues` deliveries carrying the `devin-remediate` label are actionable
- * today; everything else is acknowledged and ignored.
+ * today; everything else is acknowledged and ignored. `issues.closed` is a
+ * special case: it dispatches nothing but closes out the issue's runs.
  */
 export function normaliseEvent(
   deliveryId: string,
@@ -70,6 +73,7 @@ export function normaliseEvent(
     issueNumber: asNumber(subject?.number),
     labels,
     actionable: false,
+    issueClosed: false,
     reason: "",
   };
 
@@ -79,6 +83,12 @@ export function normaliseEvent(
 
   if (event !== "issues") {
     return { ...base, reason: "event_not_actionable_yet" };
+  }
+
+  // A closed issue is not dispatched, but it does resolve the runs behind it:
+  // the issue has been dealt with, with or without a pull request.
+  if (base.action === "closed" && base.issueNumber !== undefined) {
+    return { ...base, issueClosed: true, reason: "issue_closed" };
   }
 
   if (base.action !== "labeled") {

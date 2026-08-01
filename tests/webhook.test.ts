@@ -105,6 +105,21 @@ describe("POST /webhook/github event normalisation", () => {
     expect(response.json()).toMatchObject({ status: "ignored", reason: "action_not_actionable" });
   });
 
+  it("closes out the runs of an issue GitHub reports as closed", async () => {
+    const response = await post({
+      payload: {
+        action: "closed",
+        repository: { full_name: "ikeike443/a-sample-coding-agent" },
+        issue: { number: 42, labels: [] },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // The number of affected runs depends on the shared store's history; the
+    // closure itself is covered by tests/observability-store.test.ts.
+    expect(response.json()).toMatchObject({ status: "issue_closed", issueNumber: 42 });
+  });
+
   it("acknowledges supported but not-yet-actionable events", async () => {
     const response = await post({
       event: "issue_comment",

@@ -16,6 +16,39 @@ afterEach(() => {
   }
 });
 
+describe("SqliteRunStore issue closure", () => {
+  it("finishes the active runs of a closed issue and leaves terminal ones alone", () => {
+    const runs = store(() => new Date("2026-01-01T00:00:00.000Z"));
+    const active = runs.recordEvent({ issueRef: 42, triggerType: "webhook" });
+    runs.markWorking(active.runId, "devin-1");
+    const failed = runs.recordEvent({ issueRef: 42, triggerType: "webhook" });
+    runs.markDispatchFailed(failed.runId, "boom");
+    const otherIssue = runs.recordEvent({ issueRef: 7, triggerType: "webhook" });
+    runs.markWorking(otherIssue.runId, "devin-2");
+
+    const closed = runs.markIssueClosed(42);
+
+    expect(closed).toHaveLength(2);
+    expect(runs.getRun(active.runId)).toMatchObject({
+      status: "finished",
+      issueClosedAt: "2026-01-01T00:00:00.000Z",
+      sessionFinishedAt: "2026-01-01T00:00:00.000Z",
+    });
+    // Already terminal: only the issue closure is recorded.
+    expect(runs.getRun(failed.runId)).toMatchObject({
+      status: "dispatch_failed",
+      issueClosedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(runs.getRun(otherIssue.runId)).toMatchObject({ status: "working", issueClosedAt: null });
+  });
+
+  it("does nothing for an issue without runs", () => {
+    const runs = store();
+
+    expect(runs.markIssueClosed(999)).toEqual([]);
+  });
+});
+
 describe("SqliteRunStore state transitions", () => {
   it("records a webhook event as pending", () => {
     const runs = store(() => new Date("2026-01-01T00:00:00.000Z"));

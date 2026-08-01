@@ -24,13 +24,16 @@ export interface CostSummary {
  * Split of the runs Devin completed on its own, plus the ones it stopped on.
  *
  * `noActionNeeded` used to be counted as a failure because the old success rate
- * only looked for a pull request URL.
+ * only looked for a pull request URL. `issueClosed` covers runs resolved by the
+ * issue being closed without the run producing a pull request itself.
  */
 export interface OutcomeBreakdown {
   /** Finished with a pull request. */
   remediated: number;
   /** Finished after concluding no change was required. */
   noActionNeeded: number;
+  /** Finished because the issue was closed, without a pull request of its own. */
+  issueClosed: number;
   /** Stopped waiting for a human decision. */
   needsHumanAttention: number;
 }
@@ -99,11 +102,26 @@ export function needsHumanAttention(run: RunRecord): boolean {
 }
 
 /**
- * A run counts as successful when Devin completed it on its own — either with a
- * pull request or with a deliberate "nothing to fix" conclusion.
+ * Finished because GitHub reported the issue closed, without the run producing
+ * a pull request or a "nothing to fix" conclusion of its own. The issue was
+ * still resolved, so this is a completion rather than a failure.
+ */
+export function isClosedWithIssue(run: RunRecord): boolean {
+  return (
+    run.status === "finished" &&
+    run.issueClosedAt !== null &&
+    !isRemediated(run) &&
+    !isNoActionNeeded(run)
+  );
+}
+
+/**
+ * A run counts as successful when the issue it was opened for was dealt with —
+ * with a pull request, with a deliberate "nothing to fix" conclusion, or by the
+ * issue being closed.
  */
 export function isSuccessful(run: RunRecord): boolean {
-  return isRemediated(run) || isNoActionNeeded(run);
+  return isRemediated(run) || isNoActionNeeded(run) || isClosedWithIssue(run);
 }
 
 /**
@@ -117,6 +135,7 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
   const statusCounts = emptyStatusCounts();
   let remediated = 0;
   let noActionNeeded = 0;
+  let issueClosed = 0;
   let mttrTotalMs = 0;
   let mttrSampleSize = 0;
   let throughputLast24h = 0;
@@ -130,6 +149,8 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
       remediated += 1;
     } else if (isNoActionNeeded(run)) {
       noActionNeeded += 1;
+    } else if (isClosedWithIssue(run)) {
+      issueClosed += 1;
     }
 
     const detectedAt = timestamp(run.detectedAt);
@@ -152,7 +173,7 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
 
   const totalRuns = runs.length;
   const runsWithoutCost = totalRuns - runsWithCost;
-  const successfulRuns = remediated + noActionNeeded;
+  const successfulRuns = remediated + noActionNeeded + issueClosed;
 
   return {
     generatedAt: now.toISOString(),
@@ -163,6 +184,7 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
     outcomes: {
       remediated,
       noActionNeeded,
+      issueClosed,
       needsHumanAttention: statusCounts.needs_human_attention,
     },
     failureBreakdown: {

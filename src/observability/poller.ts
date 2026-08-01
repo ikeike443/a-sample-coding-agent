@@ -33,6 +33,12 @@ export interface SessionPollerOptions {
 export interface SessionUpdateContext {
   /** When the run first went blocked, as recorded by the store. */
   blockedSince?: string | null;
+  /**
+   * When the store first saw the outcome the session currently reports. It is
+   * reset whenever the outcome changes, so it measures how long *this* outcome
+   * has been standing — unlike `blockedSince`, which measures the whole stall.
+   */
+  outcomeReportedAt?: string | null;
   blockedGraceMs?: number;
   now?: Date;
 }
@@ -62,10 +68,27 @@ function structuredOutputPrUrl(detail: SessionDetail): string | null {
   return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
+function apiPullRequest(detail: SessionDetail) {
+  return detail.pull_requests?.find((pr) => typeof pr.pr_url === "string" && pr.pr_url);
+}
+
 /** Prefers the API's own pull request list, falling back to the structured output. */
 export function extractPrUrl(detail: SessionDetail): string | null {
-  const fromApi = detail.pull_requests?.find((pr) => typeof pr.pr_url === "string" && pr.pr_url);
-  return fromApi?.pr_url ?? structuredOutputPrUrl(detail);
+  return apiPullRequest(detail)?.pr_url ?? structuredOutputPrUrl(detail);
+}
+
+/** True once the API reports the session's pull request as merged. */
+export function isPrMerged(detail: SessionDetail): boolean {
+  return apiPullRequest(detail)?.pr_state === "merged";
+}
+
+/**
+ * A pull request that is merged or closed can no longer change, so the session
+ * has nothing left to do on it.
+ */
+function prSettled(detail: SessionDetail): boolean {
+  const state = apiPullRequest(detail)?.pr_state;
+  return state === "merged" || state === "closed";
 }
 
 /** Status a blocked session with a reported outcome is really in. */
@@ -73,13 +96,13 @@ function statusForOutcome(outcome: RemediationOutcome): RunStatus {
   return outcome === "blocked_on_question" ? "needs_human_attention" : "finished";
 }
 
-function blockedTooLong(blockedSince: string | null | undefined, now: Date, graceMs: number): boolean {
-  if (!blockedSince) {
+function olderThanGrace(since: string | null | undefined, now: Date, graceMs: number): boolean {
+  if (!since) {
     return false;
   }
 
-  const since = Date.parse(blockedSince);
-  return !Number.isNaN(since) && now.getTime() - since >= graceMs;
+  const parsed = Date.parse(since);
+  return !Number.isNaN(parsed) && now.getTime() - parsed >= graceMs;
 }
 
 /**
@@ -100,7 +123,7 @@ function resolveBlockedStatus(
     return statusForOutcome(outcome);
   }
 
-  return blockedTooLong(
+  return olderThanGrace(
     context.blockedSince,
     context.now ?? new Date(),
     context.blockedGraceMs ?? DEFAULT_BLOCKED_GRACE_MS,
@@ -109,18 +132,74 @@ function resolveBlockedStatus(
     : "blocked";
 }
 
+/**
+ * Resolves a session the API still calls `running` even though it already
+ * reported a final outcome — which happens whenever the conversation continues
+ * (a human replies, or the session keeps its turn open after reporting).
+ *
+ * Terminating on the outcome alone would be wrong: sessions are asked to update
+ * their structured output as they go, so `pr_created` can be reported while the
+ * session is still iterating (fixing CI on that very pull request, for
+ * instance). Two conservative signals are required instead:
+ *
+ * - the pull request is merged or closed, so no further work on it is possible;
+ * - or the same outcome has been standing for longer than the grace period,
+ *   measured from `outcomeReportedAt` (reset whenever the outcome changes, so a
+ *   run that stalled earlier is not settled by the first poll that sees a
+ *   result).
+ *
+ * `blocked_on_question` is a human hand-off and escalates immediately, exactly
+ * as it does for a blocked session.
+ */
+function resolveReportedOutcomeStatus(
+  outcome: RemediationOutcome,
+  detail: SessionDetail,
+  context: SessionUpdateContext,
+): RunStatus {
+  if (outcome === "blocked_on_question") {
+    return "needs_human_attention";
+  }
+
+  if (prSettled(detail)) {
+    return "finished";
+  }
+
+  return olderThanGrace(
+    context.outcomeReportedAt,
+    context.now ?? new Date(),
+    context.blockedGraceMs ?? DEFAULT_BLOCKED_GRACE_MS,
+  )
+    ? statusForOutcome(outcome)
+    : "working";
+}
+
+function resolveStatus(
+  detail: SessionDetail,
+  outcome: RemediationOutcome | null,
+  context: SessionUpdateContext,
+): RunStatus {
+  const mapped = mapSessionStatus(detail.status);
+  if (mapped === "blocked") {
+    return resolveBlockedStatus(outcome, context);
+  }
+  if (mapped === "working" && outcome !== null) {
+    return resolveReportedOutcomeStatus(outcome, detail, context);
+  }
+  return mapped;
+}
+
 export function buildSessionUpdate(
   detail: SessionDetail,
   context: SessionUpdateContext = {},
 ): SessionUpdate {
   const outcome = parseRemediationOutcome(detail.structured_output);
-  const mapped = mapSessionStatus(detail.status);
-  const status = mapped === "blocked" ? resolveBlockedStatus(outcome, context) : mapped;
+  const status = resolveStatus(detail, outcome, context);
 
   return {
     status,
     outcome,
     prUrl: extractPrUrl(detail),
+    prMerged: isPrMerged(detail),
     acuCost: detail.acus_consumed ?? null,
     errorMessage: status === "failed" ? (detail.status_detail ?? "session ended in error") : null,
   };
@@ -128,8 +207,8 @@ export function buildSessionUpdate(
 
 /**
  * Background worker that refreshes `working` / `blocked` runs from the Devin
- * API. PR merge state is out of scope: the Devin API does not report it, so
- * `pr_merged_at` stays null until a GitHub-side integration is added.
+ * API. Merge state comes from the session's `pull_requests[].pr_state`, which
+ * is what fills `pr_merged_at`.
  */
 export class SessionPoller {
   private readonly intervalMs: number;
@@ -229,6 +308,7 @@ export class SessionPoller {
   private updateFor(run: RunRecord, detail: SessionDetail): SessionUpdate {
     return buildSessionUpdate(detail, {
       blockedSince: run.blockedSince,
+      outcomeReportedAt: run.outcomeReportedAt,
       blockedGraceMs: this.blockedGraceMs,
       now: this.now(),
     });

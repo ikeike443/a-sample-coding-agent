@@ -20,6 +20,7 @@ export {
 
 export {
   computeMetrics,
+  isClosedWithIssue,
   isNoActionNeeded,
   isRemediated,
   isSuccessful,
@@ -36,6 +37,7 @@ export {
   SessionPoller,
   buildSessionUpdate,
   extractPrUrl,
+  isPrMerged,
   mapSessionStatus,
   type PollerLogger,
   type SessionPollerOptions,

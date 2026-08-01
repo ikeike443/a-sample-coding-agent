@@ -22,6 +22,7 @@ export interface RunRow {
   detectedAt: string;
   detectedAtLabel: string;
   prUrl: string | null;
+  sessionUrl: string | null;
   elapsedLabel: string;
 }
 
@@ -107,6 +108,13 @@ export function formatDuration(ms: number | null): string {
 function formatTimestamp(value: string): string {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? value : new Date(parsed).toISOString().replace("T", " ").slice(0, 19);
+}
+
+const DEVIN_SESSION_BASE_URL = "https://app.devin.ai/sessions";
+
+/** Devin session page for a run, or `null` when the dispatch never produced one. */
+export function sessionUrl(sessionId: string | null): string | null {
+  return sessionId === null || sessionId === "" ? null : `${DEVIN_SESSION_BASE_URL}/${sessionId}`;
 }
 
 const TERMINAL_STATUSES: RunStatus[] = ["dispatch_failed", "finished", "failed"];
@@ -237,6 +245,7 @@ export function buildRecentRuns(
       detectedAt: run.detectedAt,
       detectedAtLabel: formatTimestamp(run.detectedAt),
       prUrl: run.prUrl,
+      sessionUrl: sessionUrl(run.sessionId),
       elapsedLabel: elapsed(run, now),
     }));
 }

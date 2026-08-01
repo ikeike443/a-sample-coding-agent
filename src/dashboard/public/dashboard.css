@@ -122,6 +122,11 @@ th {
   color: var(--neutral);
 }
 
+.status.pr-merged {
+  margin-left: 8px;
+  font-size: 0.85em;
+}
+
 .empty {
   color: var(--neutral);
   font-size: 14px;

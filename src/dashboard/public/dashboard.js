@@ -63,6 +63,14 @@ function renderRuns(tbody, runs) {
         link.target = "_blank";
         link.rel = "noreferrer";
         prCell.append(link);
+
+        if (run.prMerged) {
+          const badge = document.createElement("span");
+          badge.className = "status tone-success pr-merged";
+          badge.textContent = "Merged";
+          badge.title = run.prMergedAtLabel ? `Merged at ${run.prMergedAtLabel} UTC` : "Merged";
+          prCell.append(badge);
+        }
       } else {
         prCell.textContent = "—";
       }

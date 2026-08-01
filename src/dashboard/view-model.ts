@@ -22,6 +22,9 @@ export interface RunRow {
   detectedAt: string;
   detectedAtLabel: string;
   prUrl: string | null;
+  /** The pull request has been merged, per the Devin API's `pr_state`. */
+  prMerged: boolean;
+  prMergedAtLabel: string | null;
   sessionUrl: string | null;
   elapsedLabel: string;
 }
@@ -245,6 +248,8 @@ export function buildRecentRuns(
       detectedAt: run.detectedAt,
       detectedAtLabel: formatTimestamp(run.detectedAt),
       prUrl: run.prUrl,
+      prMerged: run.prMergedAt !== null,
+      prMergedAtLabel: run.prMergedAt === null ? null : formatTimestamp(run.prMergedAt),
       sessionUrl: sessionUrl(run.sessionId),
       elapsedLabel: elapsed(run, now),
     }));

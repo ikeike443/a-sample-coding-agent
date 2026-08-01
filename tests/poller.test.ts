@@ -238,6 +238,147 @@ describe("SessionPoller", () => {
     });
   });
 
+  it("records pr_merged_at when the API reports the pull request as merged", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "running",
+        structured_output: { outcome: "pr_created", summary: "translated the README" },
+        pull_requests: [{ pr_url: "https://github.com/o/r/pull/5", pr_state: "merged" }],
+      }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    const merged = runs.getRun(run.runId);
+    expect(merged).toMatchObject({
+      status: "finished",
+      outcome: "pr_created",
+      prUrl: "https://github.com/o/r/pull/5",
+    });
+    expect(merged?.prMergedAt).not.toBeNull();
+  });
+
+  it("keeps the first pr_merged_at across later polls", async () => {
+    const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = new SqliteRunStore({ filename: ":memory:", now: clock });
+    stores.push(runs);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const update = {
+      status: "finished" as const,
+      prUrl: "https://github.com/o/r/pull/5",
+      prMerged: true,
+    };
+    runs.applySessionUpdate(run.runId, update);
+    clock.mockReturnValue(new Date("2026-01-01T01:00:00.000Z"));
+    runs.applySessionUpdate(run.runId, update);
+
+    expect(runs.getRun(run.runId)?.prMergedAt).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("keeps a running session that reported pr_created on an open PR as working", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "running",
+        structured_output: { outcome: "pr_created", summary: "waiting for CI" },
+        pull_requests: [{ pr_url: "https://github.com/o/r/pull/5", pr_state: "open" }],
+      }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+      blockedGraceMs: 600_000,
+    }).pollOnce();
+
+    const working = runs.getRun(run.runId);
+    // Still working, but the clock now runs so a stalled report can settle.
+    expect(working).toMatchObject({ status: "working", outcome: "pr_created" });
+    expect(working?.blockedSince).not.toBeNull();
+  });
+
+  it("finishes a running session whose reported outcome outlasts the grace period", async () => {
+    const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = new SqliteRunStore({ filename: ":memory:", now: clock });
+    stores.push(runs);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "running",
+        structured_output: { outcome: "no_action_needed", summary: "nothing to fix" },
+      }),
+    );
+    const poller = new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+      blockedGraceMs: 600_000,
+      now: () => clock(),
+    });
+
+    await poller.pollOnce();
+    expect(runs.getRun(run.runId)?.status).toBe("working");
+
+    clock.mockReturnValue(new Date("2026-01-01T00:10:00.000Z"));
+    await poller.pollOnce();
+
+    expect(runs.getRun(run.runId)).toMatchObject({
+      status: "finished",
+      outcome: "no_action_needed",
+    });
+  });
+
+  it("escalates a running session that asked a question", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "running",
+        structured_output: { outcome: "blocked_on_question", summary: "which file?" },
+      }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    expect(runs.getRun(run.runId)?.status).toBe("needs_human_attention");
+  });
+
+  it("keeps a running session without any reported outcome as working", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () => detail({ status: "running" }));
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    const working = runs.getRun(run.runId);
+    expect(working).toMatchObject({ status: "working", outcome: null });
+    expect(working?.blockedSince).toBeNull();
+  });
+
   it("logs and keeps the run when the Devin API call fails", async () => {
     const runs = store();
     const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });

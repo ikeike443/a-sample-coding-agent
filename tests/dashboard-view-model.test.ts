@@ -215,6 +215,30 @@ describe("buildRecentRuns", () => {
     expect(orphan?.elapsedLabel).toBe("—");
   });
 
+  it("marks a merged pull request", () => {
+    const [merged, open] = buildRecentRuns(
+      [
+        run({
+          runId: "merged",
+          detectedAt: "2026-08-01T11:00:00.000Z",
+          status: "finished",
+          prUrl: "https://github.com/o/r/pull/5",
+          prMergedAt: "2026-08-01T11:30:00.000Z",
+        }),
+        run({
+          runId: "open",
+          detectedAt: "2026-08-01T10:00:00.000Z",
+          status: "finished",
+          prUrl: "https://github.com/o/r/pull/6",
+        }),
+      ],
+      NOW,
+    );
+
+    expect(merged).toMatchObject({ prMerged: true, prMergedAtLabel: "2026-08-01 11:30:00" });
+    expect(open).toMatchObject({ prMerged: false, prMergedAtLabel: null });
+  });
+
   it("links to the Devin session when the run has one", () => {
     const [withSession, withoutSession] = buildRecentRuns(
       [

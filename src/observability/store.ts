@@ -61,6 +61,8 @@ export interface RecordEventInput {
 export interface SessionUpdate {
   status: RunStatus;
   prUrl?: string | null;
+  /** The Devin API reports the run's pull request as merged. */
+  prMerged?: boolean;
   acuCost?: number | null;
   errorMessage?: string | null;
   sessionFinishedAt?: string | null;
@@ -130,6 +132,16 @@ export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_
 /** Statuses in which a run counts as waiting rather than progressing. */
 const BLOCKED_STATUSES: RunStatus[] = ["blocked", "needs_human_attention"];
 
+/**
+ * Whether the run has stopped making new progress, which is what the
+ * `blocked_since` clock measures. A `working` run that has already reported an
+ * outcome counts too: the poller uses the same clock to decide when a session
+ * the API still calls `running` has really settled.
+ */
+function isWaiting(status: RunStatus, outcome: RemediationOutcome | null): boolean {
+  return BLOCKED_STATUSES.includes(status) || (status === "working" && outcome !== null);
+}
+
 function toRecord(row: RunRow): RunRecord {
   return {
     runId: row.run_id,
@@ -192,7 +204,7 @@ export class SqliteRunStore implements RunStore {
       ),
     );
 
-    for (const column of ["outcome", "blocked_since"]) {
+    for (const column of ["outcome", "blocked_since", "pr_merged_at"]) {
       if (!columns.has(column)) {
         this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} TEXT`);
       }
@@ -272,8 +284,9 @@ export class SqliteRunStore implements RunStore {
     }
 
     const prUrl = update.prUrl ?? current.prUrl;
+    const outcome = update.outcome ?? current.outcome;
     const isTerminal = update.status === "finished" || update.status === "failed";
-    const isBlocked = BLOCKED_STATUSES.includes(update.status);
+    const waiting = isWaiting(update.status, outcome);
 
     this.db
       .prepare(
@@ -281,6 +294,7 @@ export class SqliteRunStore implements RunStore {
          SET status = @status,
              pr_url = @prUrl,
              pr_url_recorded_at = @prUrlRecordedAt,
+             pr_merged_at = @prMergedAt,
              acu_cost = @acuCost,
              error_message = @errorMessage,
              session_finished_at = @sessionFinishedAt,
@@ -292,12 +306,14 @@ export class SqliteRunStore implements RunStore {
         runId,
         status: update.status,
         prUrl,
-        outcome: update.outcome ?? current.outcome,
-        // The blocked clock starts at the first blocked poll and survives
-        // subsequent blocked polls, so the grace period measures the whole stall.
-        blockedSince: isBlocked ? (current.blockedSince ?? this.timestamp()) : null,
+        outcome,
+        // The blocked clock starts at the first waiting poll and survives
+        // subsequent waiting polls, so the grace period measures the whole stall.
+        blockedSince: waiting ? (current.blockedSince ?? this.timestamp()) : null,
         prUrlRecordedAt:
           current.prUrlRecordedAt ?? (prUrl !== null && prUrl !== undefined ? this.timestamp() : null),
+        // First observation wins: the merge happened before this poll saw it.
+        prMergedAt: current.prMergedAt ?? (update.prMerged === true ? this.timestamp() : null),
         acuCost: update.acuCost ?? current.acuCost,
         errorMessage: update.errorMessage ?? current.errorMessage,
         sessionFinishedAt:

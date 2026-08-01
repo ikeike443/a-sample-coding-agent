@@ -12,6 +12,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const config = loadConfig();
   const app = Fastify({
     logger: { level: options.logLevel ?? config.logLevel },
+    bodyLimit: config.bodyLimitBytes,
   });
 
   app.get("/health", async () => ({
@@ -19,7 +20,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     uptime: process.uptime(),
   }));
 
-  app.register(registerWebhookRoutes, { prefix: "/webhook" });
+  app.register(registerWebhookRoutes, { prefix: "/webhook", config });
   app.register(registerDashboardRoutes, { prefix: "/dashboard" });
 
   return app;

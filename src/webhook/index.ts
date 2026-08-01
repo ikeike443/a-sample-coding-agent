@@ -1,13 +1,16 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 import { loadConfig, type AppConfig } from "../config.js";
+import type { DevinClient } from "../devin-client/index.js";
 import { TtlCache } from "./dedupe.js";
-import { dispatchToDevin } from "./dispatch.js";
+import { createDevinClient, dispatchToDevin, type DispatchDeps } from "./dispatch.js";
 import { normaliseEvent } from "./normalize.js";
 import { SIGNATURE_HEADER, verifySignature } from "./signature.js";
 
 export interface WebhookRouteOptions {
   config?: AppConfig;
+  /** Injected in tests; built from the configuration otherwise. */
+  devinClient?: DevinClient;
 }
 
 const DELIVERY_HEADER = "x-github-delivery";
@@ -29,6 +32,10 @@ export async function registerWebhookRoutes(
 ): Promise<void> {
   const config = options.config ?? loadConfig();
   const deliveries = new TtlCache(config.webhookDedupeTtlMs);
+  const client = options.devinClient ?? createDevinClient(config);
+  const dispatchDeps: DispatchDeps | undefined = client
+    ? { client, maxAcuLimit: config.devinMaxAcuLimit }
+    : undefined;
 
   app.addContentTypeParser(
     "application/json",
@@ -81,7 +88,7 @@ export async function registerWebhookRoutes(
     }
 
     // Respond immediately; the dispatch runs outside the request lifecycle.
-    void dispatchToDevin(event, app.log).catch((error: unknown) => {
+    void dispatchToDevin(event, app.log, dispatchDeps).catch((error: unknown) => {
       app.log.error({ err: error, deliveryId }, "devin dispatch failed");
     });
 

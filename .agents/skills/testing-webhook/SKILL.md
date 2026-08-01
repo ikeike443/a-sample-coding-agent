@@ -75,7 +75,8 @@ small initial delay so a full retry sequence finishes in <1 s. Expectations:
 
 - One actionable delivery -> exactly one `POST /organizations/<org>/sessions` with `authorization: Bearer <key>`,
   body `{prompt, tags:["remediation","trigger-webhook","issue-<N>"], max_acu_limit}`.
-- `500` -> `1 + DEVIN_MAX_RETRIES` upstream requests with gaps doubling from the initial delay; `4xx` -> exactly one.
+- `500` -> `1 + DEVIN_MAX_RETRIES` upstream requests with gaps roughly doubling from the initial delay (±20% jitter,
+  see below); `4xx` -> exactly one.
 - Dispatch is fire-and-forget (`void dispatchToDevin(...)`), so the webhook answers `200` **before** retries finish —
   always `sleep` a second or two before counting upstream requests or grepping for the outcome log line.
 - Unset `DEVIN_API_KEY`/`DEVIN_ORG_ID` (use `env -u VAR` — they may already be exported in the shell) -> still `200`,

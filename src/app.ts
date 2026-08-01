@@ -12,6 +12,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const config = loadConfig();
   const app = Fastify({
     logger: { level: options.logLevel ?? config.logLevel },
+    bodyLimit: config.bodyLimitBytes,
   });
 
   app.get("/health", async () => ({

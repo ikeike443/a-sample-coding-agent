@@ -26,6 +26,8 @@ services:
         value: info
       - key: POLL_INTERVAL_MS
         value: "30000"
+      - key: BLOCKED_GRACE_MS
+        value: "600000"
       - key: DEVIN_MAX_ACU_LIMIT
         value: "10"
       # Provide the real values in the Render dashboard (kept out of source).

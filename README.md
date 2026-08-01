@@ -251,9 +251,10 @@ A session the API still reports as blocked is resolved from its structured outpu
   turn; `no_action_needed` is a legitimate completion without a pull request);
 - `blocked_on_question` → `needs_human_attention`;
 - no structured output yet → stays `blocked` until it has been blocked for longer than the grace
-  period (`blockedGraceMs`, 10 minutes by default), after which it becomes `needs_human_attention`.
-  `needs_human_attention` runs keep being polled, so a human answering the session still moves it to
-  a terminal status.
+  period (`BLOCKED_GRACE_MS`, 10 minutes by default), after which it becomes
+  `needs_human_attention`. `needs_human_attention` runs keep being polled, so a human answering the
+  session still moves it to a terminal status.
+
 Tracking stops at that point: the Devin API does not report whether the pull request was merged, so
 `pr_merged_at` stays null until a GitHub-side integration (polling the PR, or a `pull_request`
 `closed`/`merged` webhook) is added — that is deliberately out of scope for this session.
@@ -334,6 +335,7 @@ read by `src/config.ts`:
 | `LOG_LEVEL` | no | `info` | Pino log level. |
 | `DATABASE_URL` | no | `file:./data/orchestrator.sqlite` | SQLite path (`file:` prefix optional, `:memory:` supported). |
 | `POLL_INTERVAL_MS` | no | `30000` | Session polling interval. |
+| `BLOCKED_GRACE_MS` | no | `600000` | How long a session may stay `blocked` without a structured output before it becomes `needs_human_attention`. `0` escalates on the first blocked poll. |
 
 \* `DEVIN_API_KEY` and `DEVIN_ORG_ID` are needed **together** to create Devin sessions. When either
 is missing the webhook still runs, the poller stays disabled and deliveries are recorded as

@@ -4,7 +4,7 @@ import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./devin-client/index.js";
-import { DEFAULT_POLL_INTERVAL_MS } from "./observability/index.js";
+import { DEFAULT_BLOCKED_GRACE_MS, DEFAULT_POLL_INTERVAL_MS } from "./observability/index.js";
 import { DEFAULT_DEDUPE_TTL_MS } from "./webhook/dedupe.js";
 
 export interface AppConfig {
@@ -23,6 +23,7 @@ export interface AppConfig {
   devinRequestTimeoutMs: number;
   databasePath: string;
   pollIntervalMs: number;
+  blockedGraceMs: number;
 }
 
 /** GitHub delivers webhook payloads of up to 25 MB. */
@@ -38,9 +39,14 @@ export function databasePathFromUrl(url: string): string {
   return url.startsWith("file:") ? url.slice("file:".length) : url;
 }
 
+/** A blank value means "not configured": `Number("")` is 0, which would otherwise pass as 0. */
 function boundedNumber(value: string | undefined, fallback: number, minimum: number): number {
+  if (value === undefined || value.trim() === "") {
+    return fallback;
+  }
+
   const parsed = Number(value);
-  return value !== undefined && Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
+  return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
 function positiveNumber(value: string | undefined, fallback: number): number {
@@ -116,5 +122,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     devinRequestTimeoutMs: positiveNumber(env.DEVIN_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
     databasePath: databasePathFromUrl(env.DATABASE_URL ?? DEFAULT_DATABASE_URL),
     pollIntervalMs: positiveNumber(env.POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS),
+    blockedGraceMs: nonNegativeNumber(env.BLOCKED_GRACE_MS, DEFAULT_BLOCKED_GRACE_MS),
   };
 }

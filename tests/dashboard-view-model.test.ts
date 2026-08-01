@@ -7,6 +7,7 @@ import {
   buildSuccessRateTrend,
   buildSummaryCards,
   formatDuration,
+  sessionUrl,
   statusTone,
 } from "../src/dashboard/view-model.js";
 import { computeMetrics, type RunRecord, type RunStatus } from "../src/observability/index.js";
@@ -212,6 +213,32 @@ describe("buildRecentRuns", () => {
     expect(orphan).toMatchObject({ issueLabel: "—", statusLabel: "Dispatch failed", tone: "danger" });
     // Terminal without a finish timestamp: the elapsed time must not keep counting up.
     expect(orphan?.elapsedLabel).toBe("—");
+  });
+
+  it("links to the Devin session when the run has one", () => {
+    const [withSession, withoutSession] = buildRecentRuns(
+      [
+        run({ runId: "a", sessionId: "devin-abc123", detectedAt: "2026-08-01T11:00:00.000Z" }),
+        run({
+          runId: "b",
+          sessionId: null,
+          status: "dispatch_failed",
+          detectedAt: "2026-08-01T10:00:00.000Z",
+        }),
+      ],
+      NOW,
+    );
+
+    expect(withSession?.sessionUrl).toBe("https://app.devin.ai/sessions/devin-abc123");
+    expect(withoutSession?.sessionUrl).toBeNull();
+  });
+});
+
+describe("sessionUrl", () => {
+  it("returns null without a session id", () => {
+    expect(sessionUrl(null)).toBeNull();
+    expect(sessionUrl("")).toBeNull();
+    expect(sessionUrl("devin-1")).toBe("https://app.devin.ai/sessions/devin-1");
   });
 });
 

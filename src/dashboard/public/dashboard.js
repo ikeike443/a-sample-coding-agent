@@ -32,7 +32,15 @@ function renderRuns(tbody, runs) {
     ...runs.map((run) => {
       const row = document.createElement("tr");
 
-      const cells = [run.issueLabel, null, run.triggerType, run.detectedAtLabel, null, run.elapsedLabel];
+      const cells = [
+        run.issueLabel,
+        null,
+        run.triggerType,
+        run.detectedAtLabel,
+        null,
+        null,
+        run.elapsedLabel,
+      ];
       for (const text of cells) {
         const td = document.createElement("td");
         if (text !== null) {
@@ -57,6 +65,18 @@ function renderRuns(tbody, runs) {
         prCell.append(link);
       } else {
         prCell.textContent = "—";
+      }
+
+      const sessionCell = row.children[5];
+      if (run.sessionUrl) {
+        const link = document.createElement("a");
+        link.href = run.sessionUrl;
+        link.textContent = "View Devin Session";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        sessionCell.append(link);
+      } else {
+        sessionCell.textContent = "—";
       }
 
       return row;

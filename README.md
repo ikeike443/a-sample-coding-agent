@@ -10,6 +10,36 @@ worker, metrics API) and the dashboard UI are implemented.
 
 Dashboard: <http://localhost:3000/dashboard>
 
+## Architecture
+
+```
+        ┌───────────────────┐
+Event   │  Event trigger    │   GitHub Issue/PR webhook (HMAC-signed)
+trigger │  POST /webhook/…  │
+        └─────────┬─────────┘
+                  │ verify → dedupe → normalise
+                  ▼
+        ┌───────────────────┐        ┌───────────────────────┐
+        │   Orchestrator    │ record │   Observability store  │
+        │   dispatchToDevin ├───────▶│   (SQLite: runs table) │
+        └─────────┬─────────┘        └───────────┬────────────┘
+                  │ POST /sessions               │ read
+                  ▼                               ▼
+        ┌───────────────────┐        ┌───────────────────────┐
+        │  Devin session    │        │  Outputs               │
+        │  (V3 API)         │        │  GET /dashboard        │
+        └─────────┬─────────┘        │  GET /dashboard/metrics│
+                  │                   └───────────▲────────────┘
+                  │ poll GET /sessions/{id}       │ status, PR, ACU cost
+                  └───────────────────────────────┘
+                       SessionPoller (background worker)
+```
+
+An HMAC-signed webhook is verified, deduplicated and normalised, then the orchestrator records the
+run and starts a Devin session. A background `SessionPoller` refreshes each active session from the
+Devin API and writes status, PR URL and ACU cost back into the observability store, which the
+dashboard reads.
+
 ## GitHub webhook intake
 
 `POST /webhook/github` performs the following steps:
@@ -62,12 +92,39 @@ Dashboard: <http://localhost:3000/dashboard>
 ### Docker Compose (recommended)
 
 ```bash
-cp .env.example .env   # optional today; Compose starts without it
+cp .env.example .env   # set at least GITHUB_WEBHOOK_SECRET
 docker compose up --build
 curl http://localhost:3000/health   # => {"status":"ok","uptime":...}
 ```
 
-The `orchestrator-data` volume is mounted at `/app/data` for SQLite persistence.
+`GITHUB_WEBHOOK_SECRET` is required: the server aborts at startup if it is unset (see
+[Environment variables](#environment-variables)). The `orchestrator-data` volume is mounted at
+`/app/data` for SQLite persistence, and Compose runs a `GET /health` healthcheck against the
+container.
+
+#### Simulating a webhook end to end
+
+With the stack running, send a signed `issues`/`labeled` delivery and watch it appear on the
+dashboard:
+
+```bash
+SECRET="your-webhook-secret"   # must match GITHUB_WEBHOOK_SECRET
+BODY='{"action":"labeled","label":{"name":"devin-remediate"},"repository":{"full_name":"ikeike443/a-sample-coding-agent"},"issue":{"number":1,"labels":[{"name":"devin-remediate"}]}}'
+SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+
+curl -sS http://localhost:3000/webhook/github \
+  -H "content-type: application/json" \
+  -H "x-github-event: issues" \
+  -H "x-github-delivery: demo-1" \
+  -H "x-hub-signature-256: $SIG" \
+  -d "$BODY"
+
+curl -sS http://localhost:3000/dashboard/metrics   # totalRuns reflects the delivery
+open http://localhost:3000/dashboard               # or visit in a browser
+```
+
+Without Devin credentials the run is recorded as `dispatch_failed` (still visible on the dashboard);
+with `DEVIN_API_KEY` / `DEVIN_ORG_ID` set it becomes a `working` run tracked by the poller.
 
 ### Node.js directly
 
@@ -79,28 +136,37 @@ npm run lint     # ESLint
 npm run build && npm start
 ```
 
-## Endpoints (current state)
+## Endpoints
 
-| Method | Path                 | Status                                    |
+All endpoints are implemented.
+
+| Method | Path                 | Description                                    |
 | ------ | -------------------- | ----------------------------------------- |
-| GET    | `/health`            | Implemented; 200 `{"status":"ok","uptime":n}` |
-| POST   | `/webhook/github`    | Implemented; HMAC-verified intake, dedupe, normalisation, Devin session creation |
-| GET    | `/dashboard/metrics` | Implemented; success rate, failure breakdown, MTTR, throughput, ACU cost, plus the rendered `view` model |
-| GET    | `/dashboard`         | Implemented; auto-refreshing HTML dashboard |
+| GET    | `/health`            | Liveness/health probe; 200 `{"status":"ok","uptime":n}` (used by the Docker and Render healthchecks) |
+| POST   | `/webhook/github`    | HMAC-verified intake, dedupe, normalisation and Devin session creation |
+| GET    | `/dashboard/metrics` | Success rate, failure breakdown, MTTR, throughput and ACU cost, plus the rendered `view` model |
+| GET    | `/dashboard`         | Auto-refreshing HTML dashboard (and its static assets) |
 
-## Layout and upcoming components
+## Layout
 
 ```
 src/
-  index.ts          entrypoint (server startup, graceful shutdown)
-  app.ts            Fastify instance and route registration
-  config.ts         environment variable loading
+  index.ts          entrypoint (env validation, server startup, graceful shutdown)
+  app.ts            Fastify instance, route registration and poller lifecycle
+  config.ts         environment variable loading and startup validation
   webhook/          Issue/PR webhook intake
   devin-client/     Devin V3 API wrapper
   observability/    SQLite run store, metrics and polling worker
   dashboard/        dashboard UI (page + assets) and metrics API
-tests/              Vitest test suite
+tests/              Vitest test suite (unit + the webhook→store→metrics integration test)
+Dockerfile          multi-stage, non-root production image
+docker-compose.yml  local containerised run (SQLite volume + healthcheck)
+render.yaml         Render Blueprint (Docker web service + persistent disk)
 ```
+
+`buildApp()` wires the health check, the webhook and dashboard routes and the observability
+`SessionPoller`. The poller starts automatically once the server is ready (when Devin credentials
+are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-shutdown).
 
 - **`src/webhook/`**: GitHub webhook signature verification (`GITHUB_WEBHOOK_SECRET`), normalisation
   of `issues` / `issue_comment` / `pull_request` events, delivery deduplication and dispatch to
@@ -165,7 +231,8 @@ tests/              Vitest test suite
 
 ### Polling worker
 
-`SessionPoller` (started from `src/index.ts`, interval `POLL_INTERVAL_MS`, 30s by default) calls
+`SessionPoller` (started by `buildApp()` once the server is ready, interval `POLL_INTERVAL_MS`,
+30s by default) calls
 `GET /sessions/{id}` for every `working` / `blocked` run and stores the new status, the ACU cost and
 the pull request URL (`pull_requests[0].pr_url`, falling back to `structured_output.pr_url`).
 Tracking stops at that point: the Devin API does not report whether the pull request was merged, so
@@ -212,14 +279,59 @@ script only writes DOM nodes and the display logic is covered by Vitest
 (`tests/dashboard-view-model.test.ts`, `tests/dashboard.test.ts`). `npm run build` copies
 `src/dashboard/public/` into `dist/` (`npm run copy:assets`).
 
+## Graceful shutdown
+
+`src/index.ts` handles `SIGTERM` and `SIGINT` by calling `app.close()`. Fastify's `onClose` hooks
+stop the `SessionPoller` — awaiting any in-flight poll so no run is left half-updated — and then
+close the SQLite store, before the process exits. A second signal during shutdown is ignored so the
+drain is not interrupted.
+
 ## Environment variables
 
-See `.env.example`. Today `PORT`, `HOST`, `LOG_LEVEL`, `GITHUB_WEBHOOK_SECRET`, `DEVIN_API_KEY`,
-`DEVIN_ORG_ID` and the optional `WEBHOOK_DEDUPE_TTL_MS`, `DEVIN_API_BASE_URL`,
-`DEVIN_MAX_ACU_LIMIT`, `DEVIN_MAX_RETRIES`, `DEVIN_RETRY_INITIAL_DELAY_MS`,
-`DEVIN_REQUEST_TIMEOUT_MS`, `DATABASE_URL` and `POLL_INTERVAL_MS` are actually used; the
-rest are placeholders for the follow-up sessions. Without `DEVIN_API_KEY` / `DEVIN_ORG_ID` the
-webhook still runs and logs a warning instead of creating sessions.
+Every variable and its default is documented in `.env.example`; copy it to `.env`. The full set is
+read by `src/config.ts`:
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `GITHUB_WEBHOOK_SECRET` | **yes** | — | HMAC secret for `X-Hub-Signature-256`. The server aborts at startup if unset. |
+| `WEBHOOK_DEDUPE_TTL_MS` | no | `600000` | Delivery-id dedupe window (10 min). |
+| `BODY_LIMIT_BYTES` | no | `26214400` | Max webhook body (25 MB, GitHub's cap). |
+| `DEVIN_API_KEY` | no* | — | Devin API bearer token. |
+| `DEVIN_ORG_ID` | no* | — | Devin organization id. |
+| `DEVIN_API_BASE_URL` | no | `https://api.devin.ai/v3` | Devin API root. |
+| `DEVIN_MAX_ACU_LIMIT` | no | `10` | ACU cap per remediation session. |
+| `DEVIN_MAX_RETRIES` | no | `3` | Devin API retry attempts (`0` disables). |
+| `DEVIN_RETRY_INITIAL_DELAY_MS` | no | `1000` | Initial retry backoff. |
+| `DEVIN_REQUEST_TIMEOUT_MS` | no | `30000` | Per-request abort timeout. |
+| `PORT` | no | `3000` | HTTP listen port. |
+| `HOST` | no | `0.0.0.0` | HTTP bind address. |
+| `LOG_LEVEL` | no | `info` | Pino log level. |
+| `DATABASE_URL` | no | `file:./data/orchestrator.sqlite` | SQLite path (`file:` prefix optional, `:memory:` supported). |
+| `POLL_INTERVAL_MS` | no | `30000` | Session polling interval. |
+
+\* `DEVIN_API_KEY` and `DEVIN_ORG_ID` are needed **together** to create Devin sessions. When either
+is missing the webhook still runs, the poller stays disabled and deliveries are recorded as
+`dispatch_failed` on the dashboard (a startup warning explains this).
+
+## Deploying to Render
+
+The repository ships a [`render.yaml`](render.yaml) [Blueprint](https://render.com/docs/blueprint-spec)
+that provisions a single Docker web service with a persistent disk for SQLite:
+
+1. Push this repository to GitHub (or fork it).
+2. In the [Render dashboard](https://dashboard.render.com) choose **New → Blueprint** and select the
+   repository. Render reads `render.yaml` and proposes the `devin-orchestrator` web service.
+3. Fill in the secret environment variables when prompted (they are declared `sync: false`, so they
+   are never committed): `GITHUB_WEBHOOK_SECRET`, and — to enable Devin session creation —
+   `DEVIN_API_KEY` and `DEVIN_ORG_ID`. The non-secret values (`PORT`, `HOST`, `LOG_LEVEL`,
+   `DATABASE_URL`, `POLL_INTERVAL_MS`, `DEVIN_MAX_ACU_LIMIT`) are set by the Blueprint.
+4. Apply the Blueprint. Render builds the `Dockerfile`, mounts a 1 GB disk at `/var/data`
+   (`DATABASE_URL=file:/var/data/orchestrator.sqlite` keeps the database on it) and health-checks
+   `GET /health`.
+5. Point your GitHub webhook at `https://<your-service>.onrender.com/webhook/github` with the same
+   `GITHUB_WEBHOOK_SECRET`.
+
+Updating `render.yaml` on the connected branch triggers Render to sync the changes.
 
 ## CI
 
@@ -229,4 +341,4 @@ pull request.
 ## Session tags
 
 `orchestrator-build`, `session-1-skeleton`, `session-2-webhook`, `session-3-devin-client`,
-`session-4-observability`, `session-5-dashboard`
+`session-4-observability`, `session-5-dashboard`, `session-6-integration`

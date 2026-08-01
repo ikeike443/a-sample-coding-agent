@@ -266,7 +266,11 @@ export class SqliteRunStore implements RunStore {
   }
 
   listRuns(): RunRecord[] {
-    const rows = this.db.prepare(`SELECT * FROM runs ORDER BY detected_at ASC`).all() as RunRow[];
+    // `rowid` breaks ties so runs recorded in the same millisecond keep a
+    // stable, insertion-ordered sequence (the dashboard relies on this).
+    const rows = this.db
+      .prepare(`SELECT * FROM runs ORDER BY detected_at ASC, rowid ASC`)
+      .all() as RunRow[];
     return rows.map(toRecord);
   }
 

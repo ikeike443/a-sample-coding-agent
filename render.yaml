@@ -1,0 +1,37 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec)
+#
+# Deploy with:  Render Dashboard → New → Blueprint → point at this repo.
+# Secrets (sync: false) are prompted for on first deploy and then managed in the
+# Render dashboard; they are never committed here.
+services:
+  - type: web
+    name: devin-orchestrator
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    # SQLite lives on a persistent disk so run history survives deploys/restarts.
+    disk:
+      name: orchestrator-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_URL
+        value: file:/var/data/orchestrator.sqlite
+      - key: PORT
+        value: "3000"
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: info
+      - key: POLL_INTERVAL_MS
+        value: "30000"
+      - key: DEVIN_MAX_ACU_LIMIT
+        value: "10"
+      # Provide the real values in the Render dashboard (kept out of source).
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: DEVIN_API_KEY
+        sync: false
+      - key: DEVIN_ORG_ID
+        sync: false

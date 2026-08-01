@@ -66,6 +66,8 @@ export class SessionPoller {
   private readonly intervalMs: number;
   private timer: NodeJS.Timeout | undefined;
   private running = false;
+  /** The poll started by the most recent tick, tracked so `stop()` can await it. */
+  private currentTick: Promise<void> | undefined;
 
   constructor(private readonly options: SessionPollerOptions) {
     this.intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -77,18 +79,27 @@ export class SessionPoller {
     }
 
     this.timer = setInterval(() => {
-      void this.pollOnce().catch((error: unknown) => {
-        this.options.logger.error({ err: error }, "session poll failed");
-      });
+      this.currentTick = this.pollOnce()
+        .catch((error: unknown) => {
+          this.options.logger.error({ err: error }, "session poll failed");
+        })
+        .finally(() => {
+          this.currentTick = undefined;
+        });
     }, this.intervalMs);
     this.timer.unref?.();
   }
 
-  stop(): void {
+  /**
+   * Stops the interval and waits for any in-flight poll to finish, so a
+   * graceful shutdown never tears the store down mid-poll.
+   */
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    await this.currentTick;
   }
 
   /** Polls every active run once; overlapping ticks are skipped. */

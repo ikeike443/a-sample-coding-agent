@@ -52,6 +52,50 @@ function nonNegativeNumber(value: string | undefined, fallback: number): number 
   return boundedNumber(value, fallback, 0);
 }
 
+/**
+ * Environment variables the process cannot start without. Only the webhook
+ * secret is truly mandatory: without it signature verification is meaningless.
+ * The Devin credentials are intentionally optional — the webhook still runs and
+ * records dispatch failures without them (see `validateConfig`).
+ */
+export const REQUIRED_ENV_VARS = ["GITHUB_WEBHOOK_SECRET"] as const;
+
+export interface ConfigValidation {
+  /** Missing required variables; startup must abort when non-empty. */
+  missing: string[];
+  /** Non-fatal misconfigurations worth surfacing at startup. */
+  warnings: string[];
+}
+
+/**
+ * Validates the environment for a real server start. Kept separate from
+ * `loadConfig` so tests and library callers can load a config without a full
+ * environment; the entrypoint calls this and aborts on `missing`.
+ */
+export function validateConfig(env: NodeJS.ProcessEnv = process.env): ConfigValidation {
+  const missing = REQUIRED_ENV_VARS.filter((name) => {
+    const value = env[name];
+    return value === undefined || value.trim() === "";
+  });
+
+  const warnings: string[] = [];
+  const hasApiKey = Boolean(env.DEVIN_API_KEY?.trim());
+  const hasOrgId = Boolean(env.DEVIN_ORG_ID?.trim());
+  if (hasApiKey !== hasOrgId) {
+    warnings.push(
+      "DEVIN_API_KEY and DEVIN_ORG_ID must both be set to create Devin sessions; " +
+        "only one is set, so session dispatch and polling stay disabled.",
+    );
+  } else if (!hasApiKey) {
+    warnings.push(
+      "DEVIN_API_KEY / DEVIN_ORG_ID are not set; the webhook runs but records " +
+        "dispatch failures instead of creating Devin sessions.",
+    );
+  }
+
+  return { missing, warnings };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: Number(env.PORT ?? 3000),

@@ -197,10 +197,14 @@ export function buildRecentRuns(
   now: Date = new Date(),
   limit: number = RECENT_RUNS_LIMIT,
 ): RunRow[] {
-  return [...runs]
-    .sort((a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt))
+  // Newest first, breaking `detectedAt` ties by input position so that runs
+  // recorded in the same millisecond keep a deterministic, later-first order
+  // (the store returns them oldest-first).
+  return runs
+    .map((run, index) => ({ run, index }))
+    .sort((a, b) => Date.parse(b.run.detectedAt) - Date.parse(a.run.detectedAt) || b.index - a.index)
     .slice(0, limit)
-    .map((run) => ({
+    .map(({ run }) => ({
       runId: run.runId,
       issueLabel: run.issueRef === null ? "—" : `#${run.issueRef}`,
       status: run.status,

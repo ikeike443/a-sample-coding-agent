@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
-import { TtlCache } from "../src/webhook/dedupe.js";
+import { loadConfig } from "../src/config.js";
+import { DEFAULT_DEDUPE_TTL_MS, TtlCache } from "../src/webhook/dedupe.js";
 import { computeSignature } from "../src/webhook/signature.js";
 
 const SECRET = "test-webhook-secret";
@@ -160,5 +161,29 @@ describe("TtlCache", () => {
     now = 1500;
     expect(cache.seen("id")).toBe(false);
     expect(cache.size).toBe(1);
+  });
+
+  it("evicts the oldest entries once the maximum size is reached", () => {
+    const cache = new TtlCache(60_000, () => 0, 2);
+
+    cache.seen("a");
+    cache.seen("b");
+    cache.seen("c");
+
+    expect(cache.size).toBe(2);
+    expect(cache.seen("a")).toBe(false);
+    expect(cache.seen("c")).toBe(true);
+  });
+});
+
+describe("loadConfig", () => {
+  it("falls back to the default TTL for a malformed WEBHOOK_DEDUPE_TTL_MS", () => {
+    for (const value of ["10m", "", "-1", "0"]) {
+      expect(loadConfig({ WEBHOOK_DEDUPE_TTL_MS: value }).webhookDedupeTtlMs).toBe(
+        DEFAULT_DEDUPE_TTL_MS,
+      );
+    }
+
+    expect(loadConfig({ WEBHOOK_DEDUPE_TTL_MS: "1000" }).webhookDedupeTtlMs).toBe(1000);
   });
 });

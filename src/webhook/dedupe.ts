@@ -1,4 +1,5 @@
 export const DEFAULT_DEDUPE_TTL_MS = 10 * 60 * 1000;
+export const DEFAULT_DEDUPE_MAX_ENTRIES = 10_000;
 
 /**
  * In-memory TTL cache used to drop GitHub deliveries that are sent more than
@@ -10,6 +11,7 @@ export class TtlCache {
   constructor(
     private readonly ttlMs: number = DEFAULT_DEDUPE_TTL_MS,
     private readonly now: () => number = Date.now,
+    private readonly maxEntries: number = DEFAULT_DEDUPE_MAX_ENTRIES,
   ) {}
 
   /**
@@ -26,6 +28,7 @@ export class TtlCache {
     }
 
     this.entries.set(key, timestamp + this.ttlMs);
+    this.evictOldest();
     return false;
   }
 
@@ -35,6 +38,17 @@ export class TtlCache {
 
   clear(): void {
     this.entries.clear();
+  }
+
+  /** Bounds memory usage when deliveries arrive faster than the TTL expires them. */
+  private evictOldest(): void {
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done === true) {
+        return;
+      }
+      this.entries.delete(oldest.value);
+    }
   }
 
   private prune(timestamp: number): void {

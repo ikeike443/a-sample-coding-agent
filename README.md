@@ -4,9 +4,28 @@ An event-driven automation orchestrator built on top of the Devin API. It receiv
 Pull Request events via webhooks, decides which Devin sessions to start, tracks those sessions, and
 stores their outcomes (success rate, latency, cost) so they can be visualised on a dashboard.
 
-At this point the repository contains only the **skeleton**: no business logic is implemented yet.
-The HTTP server, directory layout, Docker setup, test harness and CI pipeline are in place, and each
-component will be filled in during follow-up sessions.
+The HTTP server, directory layout, Docker setup, test harness and CI pipeline are in place, and the
+GitHub webhook intake is implemented. The Devin client, observability store and dashboard are
+filled in during follow-up sessions.
+
+## GitHub webhook intake
+
+`POST /webhook/github` performs the following steps:
+
+1. **Signature verification** — the raw request body (kept as a `Buffer` by a custom
+   `application/json` content type parser) is HMAC-SHA256 signed with `GITHUB_WEBHOOK_SECRET` using
+   Node's `node:crypto` and compared against `X-Hub-Signature-256` in constant time. A missing or
+   mismatching signature yields `401`.
+2. **Deduplication** — `X-GitHub-Delivery` is looked up in an in-memory TTL cache
+   (`WEBHOOK_DEDUPE_TTL_MS`, 10 minutes by default). A redelivery inside the window returns `200`
+   without further processing. Persisting delivery ids is left to the observability store.
+3. **Normalisation** — `X-GitHub-Event` selects the handler for `issues`, `issue_comment` and
+   `pull_request`. Only `issues` deliveries with `action: labeled` and the `devin-remediate` label
+   are actionable; every other delivery is logged and acknowledged with `200` so GitHub does not
+   see an error.
+4. **Dispatch** — actionable events are passed to `dispatchToDevin()` in `src/webhook/dispatch.ts`
+   without awaiting it, so the handler responds immediately. That function is a stub today and will
+   call the Devin client in a follow-up session.
 
 ## Technology choices
 
@@ -57,7 +76,7 @@ npm run build && npm start
 | Method | Path                 | Status                                    |
 | ------ | -------------------- | ----------------------------------------- |
 | GET    | `/health`            | Implemented; 200 `{"status":"ok","uptime":n}` |
-| POST   | `/webhook/github`    | Placeholder, returns 501                   |
+| POST   | `/webhook/github`    | Implemented; HMAC-verified intake, dedupe, normalisation |
 | GET    | `/dashboard/metrics` | Placeholder, returns empty metrics         |
 
 ## Layout and upcoming components
@@ -75,7 +94,8 @@ tests/              Vitest test suite
 ```
 
 - **`src/webhook/`**: GitHub webhook signature verification (`GITHUB_WEBHOOK_SECRET`), normalisation
-  of `issues` / `issue_comment` / `pull_request` events, and dispatch to downstream handling.
+  of `issues` / `issue_comment` / `pull_request` events, delivery deduplication and dispatch to
+  downstream handling.
 - **`src/devin-client/`**: wrapper around the Devin V3 API (create/get session, send message),
   authenticated with `DEVIN_API_KEY` / `DEVIN_ORG_ID`, with retries and typed responses.
 - **`src/observability/`**: SQLite persistence for events, sessions and outcomes, plus metrics such
@@ -84,8 +104,8 @@ tests/              Vitest test suite
 
 ## Environment variables
 
-See `.env.example`. Today only `PORT`, `HOST` and `LOG_LEVEL` are actually used; the rest are
-placeholders for the follow-up sessions.
+See `.env.example`. Today `PORT`, `HOST`, `LOG_LEVEL`, `GITHUB_WEBHOOK_SECRET` and the optional
+`WEBHOOK_DEDUPE_TTL_MS` are actually used; the rest are placeholders for the follow-up sessions.
 
 ## CI
 
@@ -94,4 +114,4 @@ pull request.
 
 ## Session tags
 
-`orchestrator-build`, `session-1-skeleton`
+`orchestrator-build`, `session-1-skeleton`, `session-2-webhook`

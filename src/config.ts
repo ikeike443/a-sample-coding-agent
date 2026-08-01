@@ -1,7 +1,11 @@
+import { DEFAULT_DEDUPE_TTL_MS } from "./webhook/dedupe.js";
+
 export interface AppConfig {
   port: number;
   host: string;
   logLevel: string;
+  githubWebhookSecret: string;
+  webhookDedupeTtlMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -9,5 +13,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: Number(env.PORT ?? 3000),
     host: env.HOST ?? "0.0.0.0",
     logLevel: env.LOG_LEVEL ?? "info",
+    githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
+    webhookDedupeTtlMs: Number(env.WEBHOOK_DEDUPE_TTL_MS ?? DEFAULT_DEDUPE_TTL_MS),
   };
 }

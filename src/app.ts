@@ -19,7 +19,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     uptime: process.uptime(),
   }));
 
-  app.register(registerWebhookRoutes, { prefix: "/webhook" });
+  app.register(registerWebhookRoutes, { prefix: "/webhook", config });
   app.register(registerDashboardRoutes, { prefix: "/dashboard" });
 
   return app;

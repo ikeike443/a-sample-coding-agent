@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from "fastify";
 
 import type { AppConfig } from "../config.js";
-import { DevinClient } from "../devin-client/index.js";
+import { DevinClient, type CreateSessionResult } from "../devin-client/index.js";
 import type { RunStore } from "../observability/index.js";
 import { REMEDIATE_LABEL, type NormalisedEvent } from "./normalize.js";
 
@@ -93,35 +93,42 @@ export async function dispatchToDevin(
     return;
   }
 
+  // Only the session creation belongs in the dispatch-failure path: a store or
+  // logging error afterwards must not label a running session as never dispatched.
+  let session: CreateSessionResult;
   try {
-    const session = await deps.client.createSession({
+    session = await deps.client.createSession({
       prompt: buildPrompt(event),
       tags,
       maxAcuLimit: deps.maxAcuLimit,
       // A retried POST /sessions must not start a second remediation run.
       idempotent: true,
     });
-
-    if (run) {
-      store?.markWorking(run.runId, session.session_id);
-    }
-
-    logger.info(
-      {
-        ...context,
-        runId: run?.runId,
-        sessionId: session.session_id,
-        sessionUrl: session.url,
-        tags,
-      },
-      "devin session created",
-    );
   } catch (error) {
     if (run) {
       store?.markDispatchFailed(run.runId, errorMessage(error));
     }
-    logger.error({ ...context, runId: run?.runId, err: error, tags }, "devin session creation failed");
+    logger.error(
+      { ...context, runId: run?.runId, err: error, tags },
+      "devin session creation failed",
+    );
+    return;
   }
+
+  if (run) {
+    store?.markWorking(run.runId, session.session_id);
+  }
+
+  logger.info(
+    {
+      ...context,
+      runId: run?.runId,
+      sessionId: session.session_id,
+      sessionUrl: session.url,
+      tags,
+    },
+    "devin session created",
+  );
 }
 
 function errorMessage(error: unknown): string {

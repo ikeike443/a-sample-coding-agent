@@ -150,6 +150,28 @@ describe("dispatchToDevin observability records", () => {
     store.close();
   });
 
+  it("keeps a created session recorded when the store write afterwards throws", async () => {
+    const store = new SqliteRunStore({ filename: ":memory:" });
+    const markWorking = vi.spyOn(store, "markWorking").mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+    const markDispatchFailed = vi.spyOn(store, "markDispatchFailed");
+    const createSession = vi.fn(async () => ({ session_id: "devin-1" }));
+
+    await expect(
+      dispatchToDevin(
+        event(),
+        fakeLogger(),
+        { client: fakeClient(createSession), maxAcuLimit: ACU_LIMIT },
+        store,
+      ),
+    ).rejects.toThrow("database is locked");
+
+    expect(markWorking).toHaveBeenCalledTimes(1);
+    expect(markDispatchFailed).not.toHaveBeenCalled();
+    store.close();
+  });
+
   it("records dispatch_failed when the Devin client is not configured", async () => {
     const store = new SqliteRunStore({ filename: ":memory:" });
 

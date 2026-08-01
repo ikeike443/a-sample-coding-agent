@@ -10,11 +10,6 @@ async function main(): Promise<void> {
       await app.close();
       process.exit(0);
     } catch (error) {
-  const shutdown = async (): Promise<void> => {
-    try {
-      await app.close();
-      process.exit(0);
-    } catch (error) {
       console.error(error);
       process.exit(1);
     }

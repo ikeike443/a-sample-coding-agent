@@ -49,13 +49,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         client: devinClient,
         logger: app.log,
         intervalMs: config.pollIntervalMs,
+        blockedGraceMs: config.blockedGraceMs,
       })
     : undefined;
 
   if (poller) {
     app.addHook("onReady", async () => {
       poller.start();
-      app.log.info({ intervalMs: config.pollIntervalMs }, "session poller started");
+      app.log.info(
+        { intervalMs: config.pollIntervalMs, blockedGraceMs: config.blockedGraceMs },
+        "session poller started",
+      );
     });
   } else {
     app.addHook("onReady", async () => {

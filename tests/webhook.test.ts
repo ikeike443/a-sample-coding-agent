@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
+import { DEFAULT_BLOCKED_GRACE_MS } from "../src/observability/index.js";
 import { DEFAULT_DEDUPE_TTL_MS, TtlCache } from "../src/webhook/dedupe.js";
 import { computeSignature } from "../src/webhook/signature.js";
 
@@ -185,5 +186,17 @@ describe("loadConfig", () => {
     }
 
     expect(loadConfig({ WEBHOOK_DEDUPE_TTL_MS: "1000" }).webhookDedupeTtlMs).toBe(1000);
+  });
+
+  it("reads BLOCKED_GRACE_MS, allowing 0 and rejecting malformed values", () => {
+    expect(loadConfig({}).blockedGraceMs).toBe(DEFAULT_BLOCKED_GRACE_MS);
+    expect(loadConfig({ BLOCKED_GRACE_MS: "60000" }).blockedGraceMs).toBe(60_000);
+    expect(loadConfig({ BLOCKED_GRACE_MS: "0" }).blockedGraceMs).toBe(0);
+
+    for (const value of ["10m", "", "-1"]) {
+      expect(loadConfig({ BLOCKED_GRACE_MS: value }).blockedGraceMs).toBe(
+        DEFAULT_BLOCKED_GRACE_MS,
+      );
+    }
   });
 });

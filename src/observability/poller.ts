@@ -66,6 +66,8 @@ export class SessionPoller {
   private readonly intervalMs: number;
   private timer: NodeJS.Timeout | undefined;
   private running = false;
+  /** The in-flight poll, tracked so `stop()` can await it before the store closes. */
+  private activePoll: Promise<void> | undefined;
 
   constructor(private readonly options: SessionPollerOptions) {
     this.intervalMs = options.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -84,11 +86,16 @@ export class SessionPoller {
     this.timer.unref?.();
   }
 
-  stop(): void {
+  /**
+   * Stops the interval and waits for any in-flight poll to finish, so a
+   * graceful shutdown never tears the store down mid-poll.
+   */
+  async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    await this.activePoll;
   }
 
   /** Polls every active run once; overlapping ticks are skipped. */
@@ -97,7 +104,23 @@ export class SessionPoller {
       return;
     }
     this.running = true;
+    // Track the poll that actually started so `stop()` awaits real in-flight
+    // work; skipped (overlapping) ticks return early without touching this.
+    // The tracked promise swallows errors so `stop()` drains without rejecting;
+    // the error still propagates to the caller below (the timer logs it).
+    const poll = this.runPoll();
+    const tracked: Promise<void> = poll
+      .catch(() => {})
+      .finally(() => {
+        if (this.activePoll === tracked) {
+          this.activePoll = undefined;
+        }
+      });
+    this.activePoll = tracked;
+    await poll;
+  }
 
+  private async runPoll(): Promise<void> {
     try {
       for (const run of this.options.store.listActiveRuns()) {
         if (!run.sessionId) {

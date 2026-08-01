@@ -12,7 +12,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
-RUN mkdir -p /app/data && chown -R node:node /app
+# `/app/data` is the Compose volume mount; `/var/data` is the Render disk mount.
+# Both are created up front and owned by the non-root `node` user.
+RUN mkdir -p /app/data /var/data && chown -R node:node /app /var/data
 USER node
 EXPOSE 3000
 CMD ["node", "dist/index.js"]

@@ -172,6 +172,46 @@ describe("SessionPoller", () => {
     }
   });
 
+  it("stop() waits for the real in-flight poll even when a later tick is skipped", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });
+    runs.markWorking(run.runId, "devin-1");
+
+    let releaseSession: () => void = () => {};
+    const getSession = vi.fn(
+      () =>
+        new Promise<SessionDetail>((resolve) => {
+          releaseSession = () => resolve(detail());
+        }),
+    );
+    const poller = new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    });
+
+    // Real poll starts and blocks inside getSession.
+    const firstPoll = poller.pollOnce();
+    await Promise.resolve();
+    // A concurrent tick is skipped by the `running` guard; it must not clear
+    // the tracking for the still-running first poll.
+    await poller.pollOnce();
+    expect(getSession).toHaveBeenCalledTimes(1);
+
+    let stopped = false;
+    const stopping = poller.stop().then(() => {
+      stopped = true;
+    });
+
+    await Promise.resolve();
+    expect(stopped).toBe(false); // still draining the in-flight poll
+
+    releaseSession();
+    await stopping;
+    await firstPoll;
+    expect(stopped).toBe(true);
+  });
+
   it("polls on the configured interval once started", async () => {
     vi.useFakeTimers();
     try {

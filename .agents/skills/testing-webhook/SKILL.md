@@ -85,8 +85,13 @@ small initial delay so a full retry sequence finishes in <1 s. Expectations:
 ## Observability store, poller and `/dashboard/metrics`
 
 Runs are persisted in SQLite (`DATABASE_URL`, default `file:./data/orchestrator.sqlite`, `:memory:` supported) and
-aggregated by `GET /dashboard/metrics` (JSON only — there is no HTML dashboard, so "UI" evidence means the JSON in a
-browser tab; tick Chrome's *Pretty-print* box, it resets on every reload).
+aggregated by `GET /dashboard/metrics` (raw metrics **plus** a `view` object used by the HTML page).
+
+`GET /dashboard` serves an HTML dashboard (assets in `src/dashboard/public/`, copied to `dist/` by `npm run build`'s
+`copy:assets`). It polls `/dashboard/metrics` every 5 s and repaints in place, so live-update evidence = mutate data
+from a shell while the tab is open and screenshot the change **without reloading** (allow ~5-10 s). Empty history
+renders `まだ実行がありません / No runs recorded yet.`; status colours come from `tone-*` CSS classes
+(finished→green, working/blocked→blue, dispatch_failed/failed→red, pending→grey).
 
 ```bash
 DATABASE_URL=file:/tmp/obs-test/data/orchestrator.sqlite POLL_INTERVAL_MS=2000 ...   # boot flags
@@ -117,6 +122,16 @@ console.log(db.prepare("select run_id,issue_ref,status,session_id,pr_url,acu_cos
   Payloads above the limit return `413 FST_ERR_CTP_BODY_TOO_LARGE`; if a large-body test unexpectedly 413s, that is this
   limit, not a signature problem.
 - Requests without `X-GitHub-Delivery` skip dedupe entirely (delivery id becomes `""`).
+
+## Testing under `docker compose up --build`
+
+- `docker compose up --build -d` binds port 3000; the DB lives on the named volume at `/app/data/orchestrator.sqlite`.
+  `docker compose down -v` gives a clean zero-runs state for empty-state assertions.
+- There is no `.env` in the repo, so `GITHUB_WEBHOOK_SECRET` defaults to `""` and **every** webhook delivery gets
+  `401 invalid_signature`. Create `.env` with `GITHUB_WEBHOOK_SECRET=test-secret` and restart compose before sending deliveries.
+- To seed richer statuses (finished with `pr_url`/`acu_cost`, working, pending) without touching app code, run a Node
+  script inside the container: `docker cp seed.js <container>:/tmp/ && docker exec <container> node /tmp/seed.js`, using
+  `require('/app/node_modules/better-sqlite3')` and `INSERT OR REPLACE INTO runs (...)`.
 
 ## Devin Secrets Needed
 

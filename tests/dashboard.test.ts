@@ -39,5 +39,29 @@ describe("GET /dashboard/metrics", () => {
       throughputLast24h: 1,
       cost: { totalAcu: 2, estimated: true },
     });
+    expect(response.json().view).toMatchObject({
+      hasRuns: true,
+      cards: expect.any(Array),
+    });
+    expect(response.json().view.recentRuns.map((row: { status: string }) => row.status)).toEqual([
+      "dispatch_failed",
+      "finished",
+    ]);
+  });
+});
+
+describe("GET /dashboard", () => {
+  it("serves the HTML page and its assets", async () => {
+    const page = await app.inject({ method: "GET", url: "/dashboard" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["content-type"]).toContain("text/html");
+    expect(page.body).toContain('src="/dashboard/dashboard.js"');
+
+    const script = await app.inject({ method: "GET", url: "/dashboard/dashboard.js" });
+    expect(script.statusCode).toBe(200);
+    expect(script.body).toContain("/dashboard/metrics");
+
+    const styles = await app.inject({ method: "GET", url: "/dashboard/dashboard.css" });
+    expect(styles.statusCode).toBe(200);
   });
 });

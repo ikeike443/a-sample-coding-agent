@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Devin orchestrator dashboard</title>
+    <link rel="stylesheet" href="/dashboard/dashboard.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Devin orchestrator</h1>
+      <p class="meta">
+        <span id="status-line">Loading…</span>
+      </p>
+    </header>
+
+    <main>
+      <section id="cards" class="cards" aria-label="Summary"></section>
+
+      <section class="panel">
+        <h2>Success rate (last 7 days)</h2>
+        <div id="trend"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent runs</h2>
+        <p id="empty" class="empty" hidden></p>
+        <table id="runs">
+          <thead>
+            <tr>
+              <th>Issue</th>
+              <th>Status</th>
+              <th>Trigger</th>
+              <th>Detected</th>
+              <th>Pull request</th>
+              <th>Elapsed</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script type="module" src="/dashboard/dashboard.js"></script>
+  </body>
+</html>

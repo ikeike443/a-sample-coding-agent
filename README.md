@@ -110,9 +110,12 @@ tests/              Vitest test suite
     `pull_requests` and `acus_consumed`;
   - `sendMessage(sessionId, message)` → `POST /sessions/{id}/messages`.
 
-  Network failures and 5xx responses are retried with an exponential backoff (`DEVIN_MAX_RETRIES`,
-  3 by default; `DEVIN_RETRY_INITIAL_DELAY_MS`, 1s then 2s, 4s, …). 4xx responses are raised
-  immediately as a `DevinApiError` carrying the status and body.
+  Network failures, 5xx responses and `429` are retried with an exponential backoff
+  (`DEVIN_MAX_RETRIES`, 3 by default, `0` disables retries; `DEVIN_RETRY_INITIAL_DELAY_MS`, 1s then
+  2s, 4s, …). Other 4xx responses are raised immediately as a `DevinApiError` carrying the status
+  and a truncated body. Every request carries an abort timeout (`DEVIN_REQUEST_TIMEOUT_MS`, 30s).
+  Session creation from the webhook sets `idempotent: true` so a retried `POST /sessions` cannot
+  start a second remediation run.
 - **`src/observability/`**: SQLite persistence for events, sessions and outcomes, plus metrics such
   as success rate, time to first response and ACU usage.
 - **`src/dashboard/`**: UI showing those metrics and the session list, and the JSON API behind it.
@@ -121,7 +124,8 @@ tests/              Vitest test suite
 
 See `.env.example`. Today `PORT`, `HOST`, `LOG_LEVEL`, `GITHUB_WEBHOOK_SECRET`, `DEVIN_API_KEY`,
 `DEVIN_ORG_ID` and the optional `WEBHOOK_DEDUPE_TTL_MS`, `DEVIN_API_BASE_URL`,
-`DEVIN_MAX_ACU_LIMIT`, `DEVIN_MAX_RETRIES`, `DEVIN_RETRY_INITIAL_DELAY_MS` are actually used; the
+`DEVIN_MAX_ACU_LIMIT`, `DEVIN_MAX_RETRIES`, `DEVIN_RETRY_INITIAL_DELAY_MS`,
+`DEVIN_REQUEST_TIMEOUT_MS` are actually used; the
 rest are placeholders for the follow-up sessions. Without `DEVIN_API_KEY` / `DEVIN_ORG_ID` the
 webhook still runs and logs a warning instead of creating sessions.
 

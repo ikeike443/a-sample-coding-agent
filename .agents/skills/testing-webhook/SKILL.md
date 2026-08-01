@@ -48,7 +48,8 @@ content types leave `request.body` unparsed so the signature check fails with 40
 ## Behaviour worth asserting
 
 - Actionable = `X-GitHub-Event: issues` + `action=labeled` + label `devin-remediate` (either `label.name` or in
-  `issue.labels[]`) -> `200 {"status":"accepted","deliveryId":...}` plus a `webhook event queued for devin dispatch (stub)` log line.
+  `issue.labels[]`) -> `200 {"status":"accepted","deliveryId":...}` plus a `devin session created` log line carrying
+  `sessionId`/`tags` (or `devin session creation failed` / `devin client not configured; skipping session creation`).
 - Bad/missing/tampered signature -> `401 {"error":"invalid_signature"}`; malformed JSON with a valid signature -> `400 {"error":"invalid_json"}`.
 - Everything else -> `200 {"status":"ignored","reason":...}` (`unsupported_event`, `event_not_actionable_yet`,
   `action_not_actionable`, `label_not_matched`). Never an error status.
@@ -57,6 +58,28 @@ content types leave `request.body` unparsed so the signature check fails with 40
   (non-numeric or <= 0) fall back to the default. The cache is capped (~10k entries) with oldest-first eviction — to test
   it, flood >10k unique delivery ids over a keep-alive `http.Agent` from a small Node script (curl-per-request is too slow),
   then re-send the oldest id (should be `accepted`) and the newest (should be `duplicate`).
+
+## Testing the outbound Devin dispatch without calling the real API
+
+Never point the orchestrator at `https://api.devin.ai`. Stand up a fake HTTP server on another port that appends every
+received request (method, url, headers, body, `Date.now()`) to a log file and can be switched between `200` / `500` /
+`401` responses via a small `/__control?mode=...&reset=1` endpoint, then boot the server with:
+
+```bash
+DEVIN_API_BASE_URL=http://localhost:4010 DEVIN_API_KEY=fake-key-123 DEVIN_ORG_ID=org-fake-1 \
+  DEVIN_MAX_ACU_LIMIT=7 DEVIN_MAX_RETRIES=2 DEVIN_RETRY_INITIAL_DELAY_MS=200 ...
+```
+
+Use **non-default** ACU/retry values (defaults are 10 / 3 / 1000 ms) so a hard-coded implementation cannot pass, and a
+small initial delay so a full retry sequence finishes in <1 s. Expectations:
+
+- One actionable delivery -> exactly one `POST /organizations/<org>/sessions` with `authorization: Bearer <key>`,
+  body `{prompt, tags:["remediation","trigger-webhook","issue-<N>"], max_acu_limit}`.
+- `500` -> `1 + DEVIN_MAX_RETRIES` upstream requests with gaps doubling from the initial delay; `4xx` -> exactly one.
+- Dispatch is fire-and-forget (`void dispatchToDevin(...)`), so the webhook answers `200` **before** retries finish —
+  always `sleep` a second or two before counting upstream requests or grepping for the outcome log line.
+- Unset `DEVIN_API_KEY`/`DEVIN_ORG_ID` (use `env -u VAR` — they may already be exported in the shell) -> still `200`,
+  zero upstream requests, and a `devin client not configured` warning.
 
 ## Known limits to watch for
 
@@ -67,5 +90,6 @@ content types leave `request.body` unparsed so the signature check fails with 40
 
 ## Devin Secrets Needed
 
-None — the webhook secret is arbitrary for local testing (`GITHUB_WEBHOOK_SECRET=test-secret`). `DEVIN_API_KEY` is only
-needed once the dispatch stub in `src/webhook/dispatch.ts` is wired to the real Devin client.
+None — the webhook secret is arbitrary for local testing (`GITHUB_WEBHOOK_SECRET=test-secret`), and `DEVIN_API_KEY` /
+`DEVIN_ORG_ID` should be dummy values pointed at a local fake API (see above). A real `DEVIN_API_KEY` is only needed
+for an intentional live smoke test against `https://api.devin.ai/v3`, which costs ACUs and should be avoided by default.

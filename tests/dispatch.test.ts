@@ -72,6 +72,7 @@ describe("dispatchToDevin", () => {
     expect(createSession.mock.calls[0]?.[0]).toMatchObject({
       tags: ["remediation", "trigger-webhook", "issue-42"],
       maxAcuLimit: ACU_LIMIT,
+      idempotent: true,
     });
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "devin-1" }),
@@ -115,6 +116,11 @@ describe("config", () => {
     expect(loadConfig({ DEVIN_MAX_ACU_LIMIT: "not-a-number" }).devinMaxAcuLimit).toBe(
       DEFAULT_MAX_ACU_LIMIT,
     );
+  });
+
+  it("honours DEVIN_MAX_RETRIES=0 as 'no retries'", () => {
+    expect(loadConfig({ DEVIN_MAX_RETRIES: "0" }).devinMaxRetries).toBe(0);
+    expect(loadConfig({ DEVIN_MAX_RETRIES: "-1" }).devinMaxRetries).toBe(3);
   });
 });
 

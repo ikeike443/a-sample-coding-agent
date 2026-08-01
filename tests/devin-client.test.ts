@@ -88,6 +88,14 @@ describe("DevinClient.createSession", () => {
 
     expect(JSON.parse(callArgs(fetchImpl)[1].body as string)).toEqual({ prompt: "hello" });
   });
+
+  it("aborts a request that exceeds the timeout", async () => {
+    const { client, fetchImpl } = harness([jsonResponse(200, { session_id: "devin-1" })]);
+
+    await client.createSession({ prompt: "hello" });
+
+    expect(callArgs(fetchImpl)[1].signal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe("DevinClient.getSession", () => {
@@ -161,6 +169,26 @@ describe("DevinClient retries", () => {
 
     await expect(client.getSession("devin-1")).resolves.toMatchObject({ session_id: "devin-1" });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries rate limited responses", async () => {
+    const { client, fetchImpl, delays } = harness([
+      jsonResponse(429, { error: "rate_limited" }),
+      jsonResponse(200, { session_id: "devin-1" }),
+    ]);
+
+    await expect(client.createSession({ prompt: "hi" })).resolves.toMatchObject({
+      session_id: "devin-1",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(delays).toEqual([1000]);
+  });
+
+  it("makes a single attempt when retries are disabled", async () => {
+    const { client, fetchImpl } = harness([jsonResponse(500, { error: "boom" })], 0);
+
+    await expect(client.createSession({ prompt: "hi" })).rejects.toBeInstanceOf(DevinApiError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("does not retry 4xx responses", async () => {

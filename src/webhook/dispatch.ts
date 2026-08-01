@@ -24,6 +24,7 @@ export function createDevinClient(config: AppConfig): DevinClient | undefined {
     baseUrl: config.devinApiBaseUrl,
     maxRetries: config.devinMaxRetries,
     initialRetryDelayMs: config.devinInitialRetryDelayMs,
+    requestTimeoutMs: config.devinRequestTimeoutMs,
   });
 }
 
@@ -86,6 +87,8 @@ export async function dispatchToDevin(
       prompt: buildPrompt(event),
       tags,
       maxAcuLimit: deps.maxAcuLimit,
+      // A retried POST /sessions must not start a second remediation run.
+      idempotent: true,
     });
 
     logger.info(

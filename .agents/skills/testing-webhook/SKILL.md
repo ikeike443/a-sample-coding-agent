@@ -60,8 +60,9 @@ content types leave `request.body` unparsed so the signature check fails with 40
 
 ## Known limits to watch for
 
-- Fastify's default `bodyLimit` is 1 MB, so payloads above that return `413 FST_ERR_CTP_BODY_TOO_LARGE` even though GitHub
-  allows up to 25 MB. If a test with a large issue body unexpectedly 413s, that is this limit, not a signature problem.
+- `bodyLimit` is set to GitHub's 25 MB maximum (`BODY_LIMIT_BYTES` overrides it, invalid values fall back to the default).
+  Payloads above the limit return `413 FST_ERR_CTP_BODY_TOO_LARGE`; if a large-body test unexpectedly 413s, that is this
+  limit, not a signature problem.
 - Requests without `X-GitHub-Delivery` skip dedupe entirely (delivery id becomes `""`).
 
 ## Devin Secrets Needed

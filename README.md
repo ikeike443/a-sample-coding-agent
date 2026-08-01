@@ -199,7 +199,8 @@ Open <http://localhost:3000/dashboard> (`docker compose up --build` or `npm run 
 - **Recent runs table** — the 20 newest runs with issue number, colour-coded status
   (finished = green, working/blocked = blue, dispatch_failed/failed = red, pending = grey), trigger
   type, detection time, pull request link and elapsed time.
-- **Trend** — a minimal inline SVG line chart of the daily success rate over the last 7 days.
+- **Trend** — a minimal inline SVG line chart of the daily success rate over the last 7 days. Days
+  without any run carry `successRate: null` and break the line instead of being drawn at 0%.
 - **Empty state** — with no history the page shows “まだ実行がありません / No runs recorded yet.”
   instead of an empty table.
 - **Live updates** — the page polls `GET /dashboard/metrics` every 5 seconds and repaints; no manual

@@ -156,6 +156,7 @@ describe("buildRecentRuns", () => {
           detectedAt: "2026-08-01T08:00:00.000Z",
           status: "dispatch_failed",
           sessionId: null,
+          sessionFinishedAt: null,
         }),
       ],
       NOW,
@@ -170,6 +171,8 @@ describe("buildRecentRuns", () => {
       prUrl: "https://github.com/o/r/pull/9",
     });
     expect(orphan).toMatchObject({ issueLabel: "—", statusLabel: "Dispatch failed", tone: "danger" });
+    // Terminal without a finish timestamp: the elapsed time must not keep counting up.
+    expect(orphan?.elapsedLabel).toBe("—");
   });
 });
 
@@ -190,7 +193,12 @@ describe("buildSuccessRateTrend", () => {
     expect(trend).toHaveLength(7);
     expect(trend[0]?.date).toBe("2026-07-26");
     expect(trend.at(-1)).toEqual({ date: "2026-08-01", totalRuns: 2, successRate: 0.5 });
-    expect(trend[0]).toEqual({ date: "2026-07-26", totalRuns: 0, successRate: 0 });
+  });
+
+  it("reports days without runs as no data rather than a 0% success rate", () => {
+    const trend = buildSuccessRateTrend([], NOW);
+
+    expect(trend.every((point) => point.successRate === null && point.totalRuns === 0)).toBe(true);
   });
 });
 
@@ -202,6 +210,7 @@ describe("buildDashboardViewModel", () => {
     expect(view.emptyMessage).toMatch(/まだ実行がありません/);
     expect(view.recentRuns).toEqual([]);
     expect(view.successRateTrend).toHaveLength(7);
+    expect(view.successRateTrend.every((point) => point.successRate === null)).toBe(true);
     expect(view.cards.map((card) => card.value)).toEqual(["0.0%", "0", "0", "—", "0", "0.00"]);
     expect(view.cards.every((card) => typeof card.detail === "string")).toBe(true);
   });

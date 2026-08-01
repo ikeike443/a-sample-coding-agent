@@ -27,7 +27,8 @@ export interface RunRow {
 
 export interface TrendPoint {
   date: string;
-  successRate: number;
+  /** `null` on days without any run, so idle days are not drawn as 0%. */
+  successRate: number | null;
   totalRuns: number;
 }
 
@@ -106,12 +107,24 @@ function formatTimestamp(value: string): string {
   return Number.isNaN(parsed) ? value : new Date(parsed).toISOString().replace("T", " ").slice(0, 19);
 }
 
+const TERMINAL_STATUSES: RunStatus[] = ["dispatch_failed", "finished", "failed"];
+
+/**
+ * Time the run has been alive. Terminal runs without a finish timestamp — a
+ * `dispatch_failed` run never gets one — are not counted up against `now`,
+ * which would make a dead run look like it is still working.
+ */
 function elapsed(run: RunRecord, now: Date): string {
   const start = Date.parse(run.detectedAt);
   if (Number.isNaN(start)) {
     return "—";
   }
-  const end = run.sessionFinishedAt === null ? now.getTime() : Date.parse(run.sessionFinishedAt);
+
+  if (run.sessionFinishedAt === null) {
+    return TERMINAL_STATUSES.includes(run.status) ? "—" : formatDuration(now.getTime() - start);
+  }
+
+  const end = Date.parse(run.sessionFinishedAt);
   return formatDuration((Number.isNaN(end) ? now.getTime() : end) - start);
 }
 
@@ -214,7 +227,7 @@ export function buildSuccessRateTrend(runs: RunRecord[], now: Date = new Date())
     points.push({
       date,
       totalRuns: dayRuns.length,
-      successRate: dayRuns.length === 0 ? 0 : successes / dayRuns.length,
+      successRate: dayRuns.length === 0 ? null : successes / dayRuns.length,
     });
   }
 

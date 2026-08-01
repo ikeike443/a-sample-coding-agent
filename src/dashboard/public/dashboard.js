@@ -75,24 +75,52 @@ function renderTrend(container, points) {
   }
 
   const step = points.length === 1 ? 0 : (width - padding * 2) / (points.length - 1);
-  const coords = points.map((point, index) => {
+
+  // Days without runs carry successRate === null and break the line rather
+  // than being drawn at 0%, which would read as a total failure.
+  const segments = [];
+  let current = [];
+  points.forEach((point, index) => {
+    if (point.successRate === null) {
+      if (current.length > 0) {
+        segments.push(current);
+        current = [];
+      }
+      return;
+    }
     const x = padding + step * index;
     const y = padding + (1 - point.successRate) * (height - padding * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
+    current.push(`${x.toFixed(1)},${y.toFixed(1)}`);
   });
+  if (current.length > 0) {
+    segments.push(current);
+  }
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "trend");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("preserveAspectRatio", "none");
 
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "#1a7f37");
-  line.setAttribute("stroke-width", "2");
-  line.setAttribute("points", coords.join(" "));
+  for (const segment of segments) {
+    const shape = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      segment.length === 1 ? "circle" : "polyline",
+    );
+    shape.setAttribute("fill", "none");
+    shape.setAttribute("stroke", "#1a7f37");
+    shape.setAttribute("stroke-width", "2");
+    if (segment.length === 1) {
+      const [x, y] = segment[0].split(",");
+      shape.setAttribute("cx", x);
+      shape.setAttribute("cy", y);
+      shape.setAttribute("r", "3");
+      shape.setAttribute("fill", "#1a7f37");
+    } else {
+      shape.setAttribute("points", segment.join(" "));
+    }
+    svg.append(shape);
+  }
 
-  svg.append(line);
   container.replaceChildren(svg);
 }
 

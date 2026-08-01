@@ -35,7 +35,7 @@ component will be filled in during follow-up sessions.
 ### Docker Compose (recommended)
 
 ```bash
-cp .env.example .env   # placeholder values; real ones come in follow-up sessions
+cp .env.example .env   # optional today; Compose starts without it
 docker compose up --build
 curl http://localhost:3000/health   # => {"status":"ok","uptime":...}
 ```
@@ -56,7 +56,7 @@ npm run build && npm start
 
 | Method | Path                 | Status                                    |
 | ------ | -------------------- | ----------------------------------------- |
-| GET    | `/health`            | Implemented; returns `{"status":"ok"}` 200 |
+| GET    | `/health`            | Implemented; 200 `{"status":"ok","uptime":n}` |
 | POST   | `/webhook/github`    | Placeholder, returns 501                   |
 | GET    | `/dashboard/metrics` | Placeholder, returns empty metrics         |
 

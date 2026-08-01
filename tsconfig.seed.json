@@ -1,0 +1,13 @@
+// Compiles `scripts/seed.ts` (and the `src/` modules it imports) to plain JS in
+// `dist-seed/`, so the seed can run inside the production image, which has no
+// `tsx` and no dev dependencies. The main build keeps `dist/` to `src/` only.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist-seed",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}

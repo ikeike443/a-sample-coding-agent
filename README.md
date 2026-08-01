@@ -134,7 +134,11 @@ npm run dev      # development server via tsx watch
 npm test         # Vitest
 npm run lint     # ESLint
 npm run build && npm start
+npm run seed     # fake dashboard runs for the last 7 days (SEED_DAYS / SEED_SEED / DATABASE_URL)
 ```
+
+In the production image `tsx` is absent; use the compiled seed instead — see
+[Seeding the deployed dashboard](#seeding-the-deployed-dashboard).
 
 ## Endpoints
 
@@ -360,6 +364,25 @@ that provisions a single Docker web service with a persistent disk for SQLite:
    `GITHUB_WEBHOOK_SECRET`.
 
 Updating `render.yaml` on the connected branch triggers Render to sync the changes.
+
+### Seeding the deployed dashboard
+
+The image has no `tsx` and no dev dependencies, so `npm run seed` does not work in the container.
+The build compiles the seed to `dist-seed/` instead; run it from the service's **Shell** tab in the
+Render dashboard (available on paid instance types), where it writes to the disk-backed database
+`DATABASE_URL` already points at:
+
+```bash
+npm run seed:dist              # 7 days of fake runs
+SEED_DAYS=14 npm run seed:dist # a different window
+```
+
+Seeded rows use `seed-` run ids and issue numbers from 900000 up, so re-running replaces only the
+previous fake data and real runs are never touched. To remove them again:
+
+```bash
+node -e "new (require('better-sqlite3'))(process.env.DATABASE_URL.replace(/^file:/,'')).prepare(\"DELETE FROM runs WHERE run_id LIKE 'seed-%'\").run()"
+```
 
 ## CI
 

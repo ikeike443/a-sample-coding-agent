@@ -10,14 +10,16 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run copy:assets",
     "copy:assets": "node -e \"fs.cpSync('src/dashboard/public','dist/dashboard/public',{recursive:true})\"",
+    "build:seed": "tsc -p tsconfig.seed.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "seed": "tsx scripts/seed.ts",
+    "seed:dist": "node dist-seed/scripts/seed.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.seed.json --noEmit"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

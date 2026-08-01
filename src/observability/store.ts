@@ -46,8 +46,12 @@ export interface RunRecord {
   errorMessage: string | null;
   /** Outcome reported by the session's structured output, if any. */
   outcome: RemediationOutcome | null;
+  /** When the current `outcome` was first observed; reset whenever it changes. */
+  outcomeReportedAt: string | null;
   /** When the run first entered a blocked state; cleared once it leaves it. */
   blockedSince: string | null;
+  /** When the GitHub issue behind the run was observed closed. */
+  issueClosedAt: string | null;
 }
 
 export interface RecordEventInput {
@@ -74,6 +78,7 @@ export interface RunStore {
   markDispatchFailed(runId: string, errorMessage: string): RunRecord | undefined;
   markWorking(runId: string, sessionId: string): RunRecord | undefined;
   applySessionUpdate(runId: string, update: SessionUpdate): RunRecord | undefined;
+  markIssueClosed(issueRef: number): RunRecord[];
   getRun(runId: string): RunRecord | undefined;
   listRuns(): RunRecord[];
   listActiveRuns(): RunRecord[];
@@ -96,7 +101,9 @@ interface RunRow {
   acu_cost: number | null;
   error_message: string | null;
   outcome: string | null;
+  outcome_reported_at: string | null;
   blocked_since: string | null;
+  issue_closed_at: string | null;
 }
 
 const SCHEMA = `
@@ -116,7 +123,9 @@ CREATE TABLE IF NOT EXISTS runs (
   acu_cost           REAL,
   error_message      TEXT,
   outcome            TEXT,
-  blocked_since      TEXT
+  outcome_reported_at TEXT,
+  blocked_since      TEXT,
+  issue_closed_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS runs_status_idx ON runs (status);
 CREATE INDEX IF NOT EXISTS runs_detected_at_idx ON runs (detected_at);
@@ -132,15 +141,6 @@ export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_
 /** Statuses in which a run counts as waiting rather than progressing. */
 const BLOCKED_STATUSES: RunStatus[] = ["blocked", "needs_human_attention"];
 
-/**
- * Whether the run has stopped making new progress, which is what the
- * `blocked_since` clock measures. A `working` run that has already reported an
- * outcome counts too: the poller uses the same clock to decide when a session
- * the API still calls `running` has really settled.
- */
-function isWaiting(status: RunStatus, outcome: RemediationOutcome | null): boolean {
-  return BLOCKED_STATUSES.includes(status) || (status === "working" && outcome !== null);
-}
 
 function toRecord(row: RunRow): RunRecord {
   return {
@@ -159,7 +159,9 @@ function toRecord(row: RunRow): RunRecord {
     acuCost: row.acu_cost,
     errorMessage: row.error_message,
     outcome: isRemediationOutcome(row.outcome) ? row.outcome : null,
+    outcomeReportedAt: row.outcome_reported_at,
     blockedSince: row.blocked_since,
+    issueClosedAt: row.issue_closed_at,
   };
 }
 
@@ -204,7 +206,13 @@ export class SqliteRunStore implements RunStore {
       ),
     );
 
-    for (const column of ["outcome", "blocked_since", "pr_merged_at"]) {
+    for (const column of [
+      "outcome",
+      "outcome_reported_at",
+      "blocked_since",
+      "issue_closed_at",
+      "pr_merged_at",
+    ]) {
       if (!columns.has(column)) {
         this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} TEXT`);
       }
@@ -232,7 +240,9 @@ export class SqliteRunStore implements RunStore {
       acuCost: null,
       errorMessage: null,
       outcome: null,
+      outcomeReportedAt: null,
       blockedSince: null,
+      issueClosedAt: null,
     };
 
     this.db
@@ -268,7 +278,7 @@ export class SqliteRunStore implements RunStore {
       .prepare(
         `UPDATE runs
          SET status = 'working', session_id = @sessionId, session_started_at = @startedAt,
-             error_message = NULL, blocked_since = NULL
+             error_message = NULL, blocked_since = NULL, outcome_reported_at = NULL
          WHERE run_id = @runId`,
       )
       .run({ runId, sessionId, startedAt: this.timestamp() });
@@ -286,7 +296,7 @@ export class SqliteRunStore implements RunStore {
     const prUrl = update.prUrl ?? current.prUrl;
     const outcome = update.outcome ?? current.outcome;
     const isTerminal = update.status === "finished" || update.status === "failed";
-    const waiting = isWaiting(update.status, outcome);
+    const isBlocked = BLOCKED_STATUSES.includes(update.status);
 
     this.db
       .prepare(
@@ -299,6 +309,7 @@ export class SqliteRunStore implements RunStore {
              error_message = @errorMessage,
              session_finished_at = @sessionFinishedAt,
              outcome = @outcome,
+             outcome_reported_at = @outcomeReportedAt,
              blocked_since = @blockedSince
          WHERE run_id = @runId`,
       )
@@ -307,9 +318,17 @@ export class SqliteRunStore implements RunStore {
         status: update.status,
         prUrl,
         outcome,
-        // The blocked clock starts at the first waiting poll and survives
-        // subsequent waiting polls, so the grace period measures the whole stall.
-        blockedSince: waiting ? (current.blockedSince ?? this.timestamp()) : null,
+        // Restarted whenever the reported outcome changes, so it measures how
+        // long *this* outcome has been standing rather than the whole run.
+        outcomeReportedAt:
+          outcome === null
+            ? null
+            : outcome === current.outcome
+              ? (current.outcomeReportedAt ?? this.timestamp())
+              : this.timestamp(),
+        // The blocked clock starts at the first blocked poll and survives
+        // subsequent blocked polls, so the grace period measures the whole stall.
+        blockedSince: isBlocked ? (current.blockedSince ?? this.timestamp()) : null,
         prUrlRecordedAt:
           current.prUrlRecordedAt ?? (prUrl !== null && prUrl !== undefined ? this.timestamp() : null),
         // First observation wins: the merge happened before this poll saw it.
@@ -323,6 +342,47 @@ export class SqliteRunStore implements RunStore {
       });
 
     return this.getRun(runId);
+  }
+
+  /**
+   * Closes out the runs for an issue GitHub reports as closed. A closed issue
+   * has been dealt with — by Devin, by a human, or by being dismissed — so an
+   * active run for it has nothing left to wait for, even when it never produced
+   * a pull request. Terminal runs are left untouched; only `issue_closed_at` is
+   * recorded for them.
+   */
+  markIssueClosed(issueRef: number): RunRecord[] {
+    const closedAt = this.timestamp();
+    const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
+    const runIds = (
+      this.db
+        .prepare(`SELECT run_id FROM runs WHERE issue_ref = ?`)
+        .all(issueRef) as { run_id: string }[]
+    ).map((row) => row.run_id);
+
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET issue_closed_at = COALESCE(issue_closed_at, ?),
+             status = CASE WHEN status IN (${placeholders}) THEN 'finished' ELSE status END,
+             session_finished_at = CASE
+               WHEN status IN (${placeholders}) THEN COALESCE(session_finished_at, ?)
+               ELSE session_finished_at END,
+             blocked_since = CASE WHEN status IN (${placeholders}) THEN NULL ELSE blocked_since END
+         WHERE issue_ref = ?`,
+      )
+      .run(
+        closedAt,
+        ...ACTIVE_STATUSES,
+        ...ACTIVE_STATUSES,
+        closedAt,
+        ...ACTIVE_STATUSES,
+        issueRef,
+      );
+
+    return runIds
+      .map((runId) => this.getRun(runId))
+      .filter((run): run is RunRecord => run !== undefined);
   }
 
   getRun(runId: string): RunRecord | undefined {

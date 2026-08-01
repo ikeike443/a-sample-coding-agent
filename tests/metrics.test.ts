@@ -21,7 +21,9 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     acuCost: null,
     errorMessage: null,
     outcome: null,
+    outcomeReportedAt: null,
     blockedSince: null,
+    issueClosedAt: null,
     ...overrides,
   };
 }
@@ -80,12 +82,32 @@ describe("computeMetrics", () => {
     expect(metrics.outcomes).toEqual({
       remediated: 1,
       noActionNeeded: 1,
+      issueClosed: 0,
       needsHumanAttention: 1,
     });
     // (remediated + noActionNeeded) / totalRuns — the old definition scored 0.25.
     expect(metrics.successfulRuns).toBe(2);
     expect(metrics.successRate).toBe(0.5);
     expect(metrics.statusCounts.needs_human_attention).toBe(1);
+  });
+
+  it("counts a run finished by its issue being closed as a success", () => {
+    const metrics = computeMetrics(
+      [
+        finished({
+          prUrl: null,
+          prUrlRecordedAt: null,
+          issueClosedAt: "2026-01-01T02:00:00.000Z",
+        }),
+        // Already remediated: the issue closure must not double count it.
+        finished({ outcome: "pr_created", issueClosedAt: "2026-01-01T02:00:00.000Z" }),
+        run({ status: "failed" }),
+      ],
+      NOW,
+    );
+
+    expect(metrics.outcomes).toMatchObject({ remediated: 1, issueClosed: 1, noActionNeeded: 0 });
+    expect(metrics.successfulRuns).toBe(2);
   });
 
   it("keeps a blocked_on_question completion out of the success rate", () => {

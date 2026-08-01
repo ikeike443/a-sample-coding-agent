@@ -304,9 +304,9 @@ describe("SessionPoller", () => {
     }).pollOnce();
 
     const working = runs.getRun(run.runId);
-    // Still working, but the clock now runs so a stalled report can settle.
+    // Still working, but the outcome clock now runs so a stalled report settles.
     expect(working).toMatchObject({ status: "working", outcome: "pr_created" });
-    expect(working?.blockedSince).not.toBeNull();
+    expect(working?.outcomeReportedAt).not.toBeNull();
   });
 
   it("finishes a running session whose reported outcome outlasts the grace period", async () => {
@@ -340,6 +340,61 @@ describe("SessionPoller", () => {
       status: "finished",
       outcome: "no_action_needed",
     });
+  });
+
+  it("does not settle a run that stalled earlier on the first poll that sees an outcome", async () => {
+    const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = new SqliteRunStore({ filename: ":memory:", now: clock });
+    stores.push(runs);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    let session = detail({ status: "blocked" });
+    const getSession = vi.fn(async () => session);
+    const poller = new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+      blockedGraceMs: 600_000,
+      now: () => clock(),
+    });
+
+    // Blocked long enough to be escalated, so `blockedSince` is stale.
+    await poller.pollOnce();
+    clock.mockReturnValue(new Date("2026-01-01T00:20:00.000Z"));
+    await poller.pollOnce();
+    expect(runs.getRun(run.runId)?.status).toBe("needs_human_attention");
+
+    // The session resumes and reports a result on a still-open pull request.
+    session = detail({
+      status: "running",
+      structured_output: { outcome: "pr_created", summary: "opened the PR" },
+      pull_requests: [{ pr_url: "https://github.com/o/r/pull/5", pr_state: "open" }],
+    });
+    await poller.pollOnce();
+
+    expect(runs.getRun(run.runId)).toMatchObject({
+      status: "working",
+      outcomeReportedAt: "2026-01-01T00:20:00.000Z",
+      blockedSince: null,
+    });
+  });
+
+  it("restarts the settle clock when the reported outcome changes", () => {
+    const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = new SqliteRunStore({ filename: ":memory:", now: clock });
+    stores.push(runs);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 4 });
+    runs.markWorking(run.runId, "devin-1");
+
+    runs.applySessionUpdate(run.runId, { status: "working", outcome: "no_action_needed" });
+    clock.mockReturnValue(new Date("2026-01-01T00:05:00.000Z"));
+    runs.applySessionUpdate(run.runId, { status: "working", outcome: "no_action_needed" });
+    expect(runs.getRun(run.runId)?.outcomeReportedAt).toBe("2026-01-01T00:00:00.000Z");
+
+    clock.mockReturnValue(new Date("2026-01-01T00:09:00.000Z"));
+    runs.applySessionUpdate(run.runId, { status: "working", outcome: "pr_created" });
+    expect(runs.getRun(run.runId)?.outcomeReportedAt).toBe("2026-01-01T00:09:00.000Z");
   });
 
   it("escalates a running session that asked a question", async () => {

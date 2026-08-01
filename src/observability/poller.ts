@@ -33,6 +33,12 @@ export interface SessionPollerOptions {
 export interface SessionUpdateContext {
   /** When the run first went blocked, as recorded by the store. */
   blockedSince?: string | null;
+  /**
+   * When the store first saw the outcome the session currently reports. It is
+   * reset whenever the outcome changes, so it measures how long *this* outcome
+   * has been standing — unlike `blockedSince`, which measures the whole stall.
+   */
+  outcomeReportedAt?: string | null;
   blockedGraceMs?: number;
   now?: Date;
 }
@@ -90,13 +96,13 @@ function statusForOutcome(outcome: RemediationOutcome): RunStatus {
   return outcome === "blocked_on_question" ? "needs_human_attention" : "finished";
 }
 
-function blockedTooLong(blockedSince: string | null | undefined, now: Date, graceMs: number): boolean {
-  if (!blockedSince) {
+function olderThanGrace(since: string | null | undefined, now: Date, graceMs: number): boolean {
+  if (!since) {
     return false;
   }
 
-  const since = Date.parse(blockedSince);
-  return !Number.isNaN(since) && now.getTime() - since >= graceMs;
+  const parsed = Date.parse(since);
+  return !Number.isNaN(parsed) && now.getTime() - parsed >= graceMs;
 }
 
 /**
@@ -117,7 +123,7 @@ function resolveBlockedStatus(
     return statusForOutcome(outcome);
   }
 
-  return blockedTooLong(
+  return olderThanGrace(
     context.blockedSince,
     context.now ?? new Date(),
     context.blockedGraceMs ?? DEFAULT_BLOCKED_GRACE_MS,
@@ -137,8 +143,10 @@ function resolveBlockedStatus(
  * instance). Two conservative signals are required instead:
  *
  * - the pull request is merged or closed, so no further work on it is possible;
- * - or the outcome has been standing for longer than the grace period, tracked
- *   by the same `blockedSince` clock used for blocked sessions.
+ * - or the same outcome has been standing for longer than the grace period,
+ *   measured from `outcomeReportedAt` (reset whenever the outcome changes, so a
+ *   run that stalled earlier is not settled by the first poll that sees a
+ *   result).
  *
  * `blocked_on_question` is a human hand-off and escalates immediately, exactly
  * as it does for a blocked session.
@@ -156,8 +164,8 @@ function resolveReportedOutcomeStatus(
     return "finished";
   }
 
-  return blockedTooLong(
-    context.blockedSince,
+  return olderThanGrace(
+    context.outcomeReportedAt,
     context.now ?? new Date(),
     context.blockedGraceMs ?? DEFAULT_BLOCKED_GRACE_MS,
   )
@@ -300,6 +308,7 @@ export class SessionPoller {
   private updateFor(run: RunRecord, detail: SessionDetail): SessionUpdate {
     return buildSessionUpdate(detail, {
       blockedSince: run.blockedSince,
+      outcomeReportedAt: run.outcomeReportedAt,
       blockedGraceMs: this.blockedGraceMs,
       now: this.now(),
     });

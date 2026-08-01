@@ -49,6 +49,15 @@ function renderRuns(tbody, runs) {
         row.append(td);
       }
 
+      if (run.issueClosedAtLabel) {
+        const issueCell = row.children[0];
+        const badge = document.createElement("span");
+        badge.className = "status tone-success badge";
+        badge.textContent = "Closed";
+        badge.title = `Issue closed at ${run.issueClosedAtLabel} UTC`;
+        issueCell.append(badge);
+      }
+
       const statusCell = row.children[1];
       const status = document.createElement("span");
       status.className = `status tone-${run.tone}`;
@@ -66,7 +75,7 @@ function renderRuns(tbody, runs) {
 
         if (run.prMerged) {
           const badge = document.createElement("span");
-          badge.className = "status tone-success pr-merged";
+          badge.className = "status tone-success badge";
           badge.textContent = "Merged";
           badge.title = run.prMergedAtLabel ? `Merged at ${run.prMergedAtLabel} UTC` : "Merged";
           prCell.append(badge);

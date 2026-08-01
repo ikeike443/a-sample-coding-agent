@@ -25,6 +25,8 @@ export interface RunRow {
   /** The pull request has been merged, per the Devin API's `pr_state`. */
   prMerged: boolean;
   prMergedAtLabel: string | null;
+  /** When the run's GitHub issue was observed closed, if it was. */
+  issueClosedAtLabel: string | null;
   sessionUrl: string | null;
   elapsedLabel: string;
 }
@@ -160,7 +162,7 @@ export function buildSummaryCards(metrics: OrchestratorMetrics): SummaryCard[] {
       id: "success-rate",
       label: "Success rate",
       value: formatPercent(metrics.successRate),
-      detail: `${metrics.successfulRuns} of ${metrics.totalRuns} run(s) completed by Devin (${outcomes.remediated} remediated + ${outcomes.noActionNeeded} no action needed)`,
+      detail: `${metrics.successfulRuns} of ${metrics.totalRuns} run(s) resolved (${outcomes.remediated} remediated + ${outcomes.noActionNeeded} no action needed + ${outcomes.issueClosed} issue closed)`,
       tone: successTone(metrics.successRate, metrics.totalRuns),
     },
     {
@@ -175,6 +177,13 @@ export function buildSummaryCards(metrics: OrchestratorMetrics): SummaryCard[] {
       label: "No action needed",
       value: `${outcomes.noActionNeeded}`,
       detail: "Runs finished with nothing to fix — a valid completion, not a failure",
+      tone: "success",
+    },
+    {
+      id: "issue-closed",
+      label: "Issue closed",
+      value: `${outcomes.issueClosed}`,
+      detail: "Runs resolved by the issue being closed, without a pull request of their own",
       tone: "success",
     },
     {
@@ -250,6 +259,7 @@ export function buildRecentRuns(
       prUrl: run.prUrl,
       prMerged: run.prMergedAt !== null,
       prMergedAtLabel: run.prMergedAt === null ? null : formatTimestamp(run.prMergedAt),
+      issueClosedAtLabel: run.issueClosedAt === null ? null : formatTimestamp(run.issueClosedAt),
       sessionUrl: sessionUrl(run.sessionId),
       elapsedLabel: elapsed(run, now),
     }));

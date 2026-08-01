@@ -31,7 +31,9 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     acuCost: null,
     errorMessage: null,
     outcome: null,
+    outcomeReportedAt: null,
     blockedSince: null,
+    issueClosedAt: null,
     ...overrides,
   };
 }
@@ -88,6 +90,7 @@ describe("buildSummaryCards", () => {
       "success-rate",
       "remediated",
       "no-action-needed",
+      "issue-closed",
       "needs-human-attention",
       "dispatch-failed",
       "session-failed",
@@ -132,7 +135,7 @@ describe("buildSummaryCards", () => {
     expect(byId["needs-human-attention"]).toMatchObject({ value: "1", tone: "danger" });
     expect(byId["success-rate"]?.value).toBe("66.7%");
     expect(byId["success-rate"]?.detail).toBe(
-      "2 of 3 run(s) completed by Devin (1 remediated + 1 no action needed)",
+      "2 of 3 run(s) resolved (1 remediated + 1 no action needed + 0 issue closed)",
     );
   });
 
@@ -303,6 +306,7 @@ describe("buildDashboardViewModel", () => {
     expect(view.successRateTrend.every((point) => point.successRate === null)).toBe(true);
     expect(view.cards.map((card) => card.value)).toEqual([
       "0.0%",
+      "0",
       "0",
       "0",
       "0",

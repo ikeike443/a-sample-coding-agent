@@ -75,11 +75,41 @@ small initial delay so a full retry sequence finishes in <1 s. Expectations:
 
 - One actionable delivery -> exactly one `POST /organizations/<org>/sessions` with `authorization: Bearer <key>`,
   body `{prompt, tags:["remediation","trigger-webhook","issue-<N>"], max_acu_limit}`.
-- `500` -> `1 + DEVIN_MAX_RETRIES` upstream requests with gaps doubling from the initial delay; `4xx` -> exactly one.
+- `500` -> `1 + DEVIN_MAX_RETRIES` upstream requests with gaps roughly doubling from the initial delay (±20% jitter,
+  see below); `4xx` -> exactly one.
 - Dispatch is fire-and-forget (`void dispatchToDevin(...)`), so the webhook answers `200` **before** retries finish —
   always `sleep` a second or two before counting upstream requests or grepping for the outcome log line.
 - Unset `DEVIN_API_KEY`/`DEVIN_ORG_ID` (use `env -u VAR` — they may already be exported in the shell) -> still `200`,
   zero upstream requests, and a `devin client not configured` warning.
+
+## Observability store, poller and `/dashboard/metrics`
+
+Runs are persisted in SQLite (`DATABASE_URL`, default `file:./data/orchestrator.sqlite`, `:memory:` supported) and
+aggregated by `GET /dashboard/metrics` (JSON only — there is no HTML dashboard, so "UI" evidence means the JSON in a
+browser tab; tick Chrome's *Pretty-print* box, it resets on every reload).
+
+```bash
+DATABASE_URL=file:/tmp/obs-test/data/orchestrator.sqlite POLL_INTERVAL_MS=2000 ...   # boot flags
+# dump the table (better-sqlite3 is already in node_modules; the sqlite3 CLI may not be installed)
+node -e 'const D=require("./node_modules/better-sqlite3");const db=new D(process.argv[1],{readonly:true});
+console.log(db.prepare("select run_id,issue_ref,status,session_id,pr_url,acu_cost,error_message from runs").all())' \
+  /tmp/obs-test/data/orchestrator.sqlite
+```
+
+- Every actionable delivery writes a `pending` row, then `working` (+`session_id`) or `dispatch_failed`
+  (`session_id` NULL, `error_message` set) — including when `DEVIN_API_KEY`/`DEVIN_ORG_ID` are unset. Row count is the
+  best oracle for "no run was created": bad signature -> 401 and no row; duplicate delivery id -> 200 `duplicate` and no row.
+- The poller only starts when Devin credentials are configured (`src/index.ts`), so status transitions can only be
+  tested against the fake API. Have the stub's `GET /organizations/{org}/sessions/{id}` return `status:"exit"` plus
+  `pull_requests[0].pr_url` and `acus_consumed`; with `POLL_INTERVAL_MS=2000` the row flips to `finished` within ~2 s and
+  logs `run status refreshed`. `error` -> `failed`, `suspended` -> `blocked`.
+- Metrics are computed over the whole history, so assert deltas: `successRate` counts only `finished` runs **that have a
+  pr_url**, `mttrMs` is null until some run has `pr_url_recorded_at`, `throughputLast24h` counts finished runs, and
+  `cost.estimated` is true while any run lacks an ACU cost.
+- The DB file survives restarts — reuse the same `DATABASE_URL` across reboots to prove persistence, or delete the
+  directory to start from the zeroed metrics shape.
+- Retry backoff now carries ±20% jitter, so gap assertions must use ranges (200 ms initial -> ~160-240 ms, then ~320-480 ms),
+  never exact doubling.
 
 ## Known limits to watch for
 

@@ -28,6 +28,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 const SEED_RUN_PREFIX = "seed-";
 
+/**
+ * Issue numbers for seeded runs start well above any real GitHub issue number so
+ * the `issue_closed` scenario (which finishes every run sharing an `issue_ref`,
+ * see `SqliteRunStore.markIssueClosed`) can only ever touch its own seeded row —
+ * never a genuine run in the target database.
+ */
+const SEED_ISSUE_BASE = 900_000;
+
 /** Deterministic PRNG so a given `SEED_SEED` always produces the same dataset. */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
@@ -56,9 +64,9 @@ interface GeneratedRun {
   triggerType: TriggerType;
   sessionId: string;
   detectedAt: Date;
+  /** When the session finishes / stalls; clamped so it never lands in the future. */
+  finishedAt: Date;
   scenario: Scenario;
-  /** Minutes from detection to the session finishing / stalling. */
-  durationMin: number;
   acuCost: number;
 }
 
@@ -100,22 +108,28 @@ function intBetween(rand: () => number, min: number, max: number): number {
 
 function generateRuns(days: number, now: Date, rand: () => number): GeneratedRun[] {
   const runs: GeneratedRun[] = [];
-  let issueRef = 100;
+  let issueRef = SEED_ISSUE_BASE;
   let sessionSeq = 1;
+  // A few minutes before "now", so no seeded timestamp is in the future.
+  const cutoffMs = now.getTime() - 5 * MINUTE_MS;
 
   for (let offset = days - 1; offset >= 0; offset -= 1) {
     const isToday = offset === 0;
+    // Anchor to the UTC midnight of the target day: the dashboard buckets runs
+    // by the UTC date prefix of `detectedAt`, so a detection generated for this
+    // day has to stay within its own calendar day to land in the right bucket.
+    const target = new Date(now.getTime() - offset * DAY_MS);
+    const dayStartMs = Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), target.getUTCDate());
+    // The current day is only partly elapsed; past days span the whole 24h.
+    const maxMinuteOfDay = isToday
+      ? Math.max(1, Math.floor((cutoffMs - dayStartMs) / MINUTE_MS))
+      : 24 * 60 - 1;
     const runsThisDay = intBetween(rand, 3, 7);
 
     for (let i = 0; i < runsThisDay; i += 1) {
-      // Spread detections across the working part of the day, clamped so a
-      // "today" run never lands in the future.
-      const minutesIntoDay = intBetween(rand, 8 * 60, 20 * 60);
-      const dayStart = now.getTime() - offset * DAY_MS;
-      let detectedMs = dayStart - 12 * 60 * MINUTE_MS + minutesIntoDay * MINUTE_MS;
-      if (detectedMs > now.getTime() - 5 * MINUTE_MS) {
-        detectedMs = now.getTime() - intBetween(rand, 5, 90) * MINUTE_MS;
-      }
+      const detectedMs = dayStartMs + intBetween(rand, 0, maxMinuteOfDay) * MINUTE_MS;
+      const durationMin = intBetween(rand, 4, 55);
+      const finishedMs = Math.min(detectedMs + durationMin * MINUTE_MS, cutoffMs);
 
       const scenarioPool =
         isToday && rand() < 0.5 ? TODAY_EXTRA_SCENARIOS : TERMINAL_SCENARIOS;
@@ -127,8 +141,8 @@ function generateRuns(days: number, now: Date, rand: () => number): GeneratedRun
         triggerType: rand() < 0.8 ? "webhook" : "schedule",
         sessionId: `devin-seed-${sessionSeq++}`,
         detectedAt: new Date(detectedMs),
+        finishedAt: new Date(finishedMs),
         scenario,
-        durationMin: intBetween(rand, 4, 55),
         acuCost: Number((rand() * 7 + 0.5).toFixed(2)),
       });
     }
@@ -148,7 +162,7 @@ const OUTCOME_BY_SCENARIO: Partial<Record<Scenario, RemediationOutcome>> = {
 function applyScenario(store: SqliteRunStore, run: GeneratedRun, setClock: (at: Date) => void): void {
   const detectedAt = run.detectedAt;
   const startedAt = new Date(detectedAt.getTime() + 10 * 1000);
-  const finishedAt = new Date(detectedAt.getTime() + run.durationMin * MINUTE_MS);
+  const finishedAt = run.finishedAt;
 
   setClock(detectedAt);
   store.recordEvent({

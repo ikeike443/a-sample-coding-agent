@@ -7,6 +7,18 @@
  * - `POST /sessions/{devin_id}/messages`  message an existing session
  */
 
+import {
+  REMEDIATION_STRUCTURED_OUTPUT_SCHEMA,
+} from "./remediation.js";
+
+export {
+  REMEDIATION_OUTCOMES,
+  REMEDIATION_STRUCTURED_OUTPUT_SCHEMA,
+  isRemediationOutcome,
+  parseRemediationOutcome,
+  type RemediationOutcome,
+} from "./remediation.js";
+
 export const DEFAULT_DEVIN_API_BASE_URL = "https://api.devin.ai/v3";
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_INITIAL_RETRY_DELAY_MS = 1000;
@@ -26,6 +38,7 @@ export type SessionStatus =
   | "exit"
   | "error"
   | "suspended"
+  | "blocked"
   | "resuming";
 
 export interface SessionPullRequest {
@@ -39,9 +52,17 @@ export interface CreateSessionParams {
   playbookId?: string;
   maxAcuLimit?: number;
   structuredOutputSchema?: Record<string, unknown>;
+  /** Makes the session end its turn with `provide_structured_output`. */
+  structuredOutputRequired?: boolean;
   title?: string;
   idempotent?: boolean;
 }
+
+/** `createRemediationSession` owns the structured output contract itself. */
+export type CreateRemediationSessionParams = Omit<
+  CreateSessionParams,
+  "structuredOutputSchema" | "structuredOutputRequired"
+>;
 
 export interface CreateSessionResult {
   session_id: string;
@@ -149,8 +170,24 @@ export class DevinClient {
       playbook_id: params.playbookId,
       max_acu_limit: params.maxAcuLimit,
       structured_output_schema: params.structuredOutputSchema,
+      structured_output_required: params.structuredOutputRequired,
       title: params.title,
       idempotent: params.idempotent,
+    });
+  }
+
+  /**
+   * Creates a remediation session. The structured output is always required so
+   * the session explicitly ends its turn — including when it concludes that no
+   * change is needed and would otherwise idle as `blocked`.
+   */
+  async createRemediationSession(
+    params: CreateRemediationSessionParams,
+  ): Promise<CreateSessionResult> {
+    return this.createSession({
+      ...params,
+      structuredOutputSchema: REMEDIATION_STRUCTURED_OUTPUT_SCHEMA,
+      structuredOutputRequired: true,
     });
   }
 

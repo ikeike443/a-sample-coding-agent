@@ -29,6 +29,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     prMergedAt: null,
     acuCost: null,
     errorMessage: null,
+    outcome: null,
+    blockedSince: null,
     ...overrides,
   };
 }
@@ -39,6 +41,7 @@ describe("statusTone", () => {
       finished: "success",
       working: "progress",
       blocked: "progress",
+      needs_human_attention: "danger",
       dispatch_failed: "danger",
       failed: "danger",
       pending: "neutral",
@@ -82,6 +85,9 @@ describe("buildSummaryCards", () => {
 
     expect(cards.map((card) => card.id)).toEqual([
       "success-rate",
+      "remediated",
+      "no-action-needed",
+      "needs-human-attention",
       "dispatch-failed",
       "session-failed",
       "mttr",
@@ -95,6 +101,38 @@ describe("buildSummaryCards", () => {
     expect(byId["throughput"]?.value).toBe("1");
     expect(byId["cost"]?.value).toBe("3.00");
     expect(byId["cost"]?.detail).toMatch(/Approximate/);
+  });
+
+  it("breaks the completions down into remediated and no action needed", () => {
+    const runs = [
+      run({
+        runId: "a",
+        status: "finished",
+        outcome: "pr_created",
+        prUrl: "https://github.com/o/r/pull/1",
+        prUrlRecordedAt: "2026-08-01T11:00:00.000Z",
+        sessionFinishedAt: "2026-08-01T11:00:00.000Z",
+      }),
+      run({
+        runId: "b",
+        status: "finished",
+        outcome: "no_action_needed",
+        sessionFinishedAt: "2026-08-01T11:00:00.000Z",
+      }),
+      run({ runId: "c", status: "needs_human_attention", blockedSince: "2026-08-01T10:10:00.000Z" }),
+    ];
+
+    const byId = Object.fromEntries(
+      buildSummaryCards(computeMetrics(runs, NOW)).map((card) => [card.id, card]),
+    );
+
+    expect(byId["remediated"]?.value).toBe("1");
+    expect(byId["no-action-needed"]?.value).toBe("1");
+    expect(byId["needs-human-attention"]).toMatchObject({ value: "1", tone: "danger" });
+    expect(byId["success-rate"]?.value).toBe("66.7%");
+    expect(byId["success-rate"]?.detail).toBe(
+      "2 of 3 run(s) completed by Devin (1 remediated + 1 no action needed)",
+    );
   });
 
   it("marks failure cards green when there are none", () => {
@@ -115,6 +153,7 @@ describe("buildSummaryCards", () => {
     const byId = Object.fromEntries(cards.map((card) => [card.id, card]));
 
     expect(byId["success-rate"]?.tone).toBe("success");
+    expect(byId["needs-human-attention"]?.tone).toBe("success");
     expect(byId["dispatch-failed"]?.tone).toBe("success");
     expect(byId["session-failed"]?.tone).toBe("success");
     expect(byId["cost"]?.detail).toMatch(/Exact/);
@@ -211,7 +250,17 @@ describe("buildDashboardViewModel", () => {
     expect(view.recentRuns).toEqual([]);
     expect(view.successRateTrend).toHaveLength(7);
     expect(view.successRateTrend.every((point) => point.successRate === null)).toBe(true);
-    expect(view.cards.map((card) => card.value)).toEqual(["0.0%", "0", "0", "—", "0", "0.00"]);
+    expect(view.cards.map((card) => card.value)).toEqual([
+      "0.0%",
+      "0",
+      "0",
+      "0",
+      "0",
+      "0",
+      "—",
+      "0",
+      "0.00",
+    ]);
     expect(view.cards.every((card) => typeof card.detail === "string")).toBe(true);
   });
 

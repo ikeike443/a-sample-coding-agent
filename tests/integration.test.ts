@@ -27,7 +27,10 @@ const createSession = vi.fn(async () => {
 const getSession = vi.fn(
   async (): Promise<SessionDetail> => ({ session_id: "devin-integration-1", status: "running" }),
 );
-const devinClient = { createSession, getSession } as unknown as DevinClient;
+const devinClient = {
+  createRemediationSession: createSession,
+  getSession,
+} as unknown as DevinClient;
 
 const store = new SqliteRunStore({ filename: ":memory:" });
 const app = buildApp({ logLevel: "silent", store, devinClient });

@@ -121,6 +121,123 @@ describe("SessionPoller", () => {
     });
   });
 
+  it("finishes a blocked session that already reported an outcome", async () => {
+    const runs = store();
+    const remediated = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });
+    runs.markWorking(remediated.runId, "devin-pr");
+    const noAction = runs.recordEvent({ triggerType: "webhook", issueRef: 2 });
+    runs.markWorking(noAction.runId, "devin-no-action");
+
+    const getSession = vi.fn(async (sessionId: string) =>
+      sessionId === "devin-pr"
+        ? detail({
+            session_id: sessionId,
+            status: "blocked",
+            structured_output: {
+              outcome: "pr_created",
+              summary: "fixed the typo",
+              pr_url: "https://github.com/o/r/pull/12",
+            },
+          })
+        : detail({
+            session_id: sessionId,
+            status: "blocked",
+            structured_output: {
+              outcome: "no_action_needed",
+              summary: "no typo found",
+              pr_url: null,
+            },
+          }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession as unknown as ReturnType<typeof vi.fn>),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    expect(runs.getRun(remediated.runId)).toMatchObject({
+      status: "finished",
+      outcome: "pr_created",
+      prUrl: "https://github.com/o/r/pull/12",
+    });
+    expect(runs.getRun(noAction.runId)).toMatchObject({
+      status: "finished",
+      outcome: "no_action_needed",
+      prUrl: null,
+    });
+    expect(runs.getRun(noAction.runId)?.sessionFinishedAt).not.toBeNull();
+  });
+
+  it("flags a blocked session that asked a question as needing human attention", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "blocked",
+        structured_output: { outcome: "blocked_on_question", summary: "which file?" },
+      }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    expect(runs.getRun(run.runId)).toMatchObject({
+      status: "needs_human_attention",
+      outcome: "blocked_on_question",
+    });
+  });
+
+  it("keeps a briefly blocked session without structured output as blocked", async () => {
+    const runs = store();
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () => detail({ status: "blocked" }));
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+      blockedGraceMs: 600_000,
+    }).pollOnce();
+
+    const blocked = runs.getRun(run.runId);
+    expect(blocked).toMatchObject({ status: "blocked", outcome: null });
+    expect(blocked?.blockedSince).not.toBeNull();
+  });
+
+  it("escalates to needs_human_attention once blocked outlasts the grace period", async () => {
+    const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = new SqliteRunStore({ filename: ":memory:", now: clock });
+    stores.push(runs);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });
+    runs.markWorking(run.runId, "devin-1");
+
+    const getSession = vi.fn(async () => detail({ status: "blocked" }));
+    const poller = new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+      blockedGraceMs: 600_000,
+      now: () => clock(),
+    });
+
+    await poller.pollOnce();
+    expect(runs.getRun(run.runId)?.status).toBe("blocked");
+
+    // Ten minutes later the session is still blocked and still silent.
+    clock.mockReturnValue(new Date("2026-01-01T00:10:00.000Z"));
+    await poller.pollOnce();
+
+    expect(runs.getRun(run.runId)).toMatchObject({
+      status: "needs_human_attention",
+      blockedSince: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
   it("logs and keeps the run when the Devin API call fails", async () => {
     const runs = store();
     const run = runs.recordEvent({ triggerType: "webhook", issueRef: 1 });

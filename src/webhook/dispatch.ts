@@ -43,6 +43,7 @@ export function buildPrompt(event: NormalisedEvent): string {
     `The issue was labelled \`${REMEDIATE_LABEL}\`, which is the signal to work on it.`,
     `Labels on the issue: ${labels}.`,
     "Read the issue description and comments, reproduce the problem, implement a fix and open a pull request that references the issue.",
+    "When you are done, report the result with the required structured output: `pr_created` with the `pr_url`, `no_action_needed` when nothing had to change, or `blocked_on_question` when a human decision is required.",
   ].join("\n");
 }
 
@@ -97,7 +98,7 @@ export async function dispatchToDevin(
   // logging error afterwards must not label a running session as never dispatched.
   let session: CreateSessionResult;
   try {
-    session = await deps.client.createSession({
+    session = await deps.client.createRemediationSession({
       prompt: buildPrompt(event),
       tags,
       maxAcuLimit: deps.maxAcuLimit,

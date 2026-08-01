@@ -175,8 +175,13 @@ are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-sh
   `https://api.devin.ai/v3/organizations/{DEVIN_ORG_ID}` (override the root with
   `DEVIN_API_BASE_URL`) and authenticates with `DEVIN_API_KEY` as a bearer token. It uses Node's
   built-in `fetch` (injectable for tests) and exposes:
-  - `createSession({ prompt, tags, playbookId, maxAcuLimit, structuredOutputSchema, title, idempotent })`
+  - `createSession({ prompt, tags, playbookId, maxAcuLimit, structuredOutputSchema, structuredOutputRequired, title, idempotent })`
     → `POST /sessions`, returning `session_id` and `url`;
+  - `createRemediationSession(params)` → the same call with
+    `structured_output_required: true` and the remediation schema
+    (`outcome: pr_created | no_action_needed | blocked_on_question`, `summary`, nullable `pr_url`)
+    always attached. This is what the webhook dispatch uses: without a required structured output a
+    session that decides nothing needs fixing never ends its turn and idles as `blocked` forever;
   - `getSession(sessionId)` → `GET /sessions/{id}`, returning `status`, `structured_output`,
     `pull_requests` and `acus_consumed`;
   - `sendMessage(sessionId, message)` → `POST /sessions/{id}/messages`.
@@ -213,12 +218,14 @@ are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-sh
 | `detected_at`         | TEXT    | ISO-8601, set on intake                                                       |
 | `session_started_at`  | TEXT    | ISO-8601, set when the session was created                                    |
 | `session_finished_at` | TEXT    | ISO-8601, set when the session reached a terminal state                       |
-| `status`              | TEXT    | `pending` \| `dispatch_failed` \| `working` \| `blocked` \| `finished` \| `failed` |
+| `status`              | TEXT    | `pending` \| `dispatch_failed` \| `working` \| `blocked` \| `needs_human_attention` \| `finished` \| `failed` |
 | `pr_url`              | TEXT    | Pull request opened by the session, nullable                                  |
 | `pr_url_recorded_at`  | TEXT    | ISO-8601 stamp of when `pr_url` was first seen; the MTTR end point            |
 | `pr_merged_at`        | TEXT    | Always null today, see below                                                  |
 | `acu_cost`            | REAL    | `acus_consumed` reported by the Devin API, nullable                           |
 | `error_message`       | TEXT    | Dispatch or session error, nullable                                           |
+| `outcome`             | TEXT    | `pr_created` \| `no_action_needed` \| `blocked_on_question` from the structured output, nullable |
+| `blocked_since`       | TEXT    | ISO-8601 stamp of the first blocked poll; cleared when the run leaves the blocked states |
 
 ### Lifecycle
 
@@ -226,15 +233,27 @@ are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-sh
 2. `dispatch_failed` — the Devin API rejected or never answered `POST /sessions` (or no Devin
    credentials are configured). `session_id` stays null and `error_message` explains why.
 3. `working` — the session was created; `session_id` and `session_started_at` are stored.
-4. `blocked` / `finished` / `failed` — written by the polling worker from the Devin session status
-   (`suspended` → `blocked`, `exit` → `finished`, `error` → `failed`).
+4. `blocked` / `needs_human_attention` / `finished` / `failed` — written by the polling worker from
+   the Devin session status (`suspended`/`blocked` → `blocked`, `exit` → `finished`,
+   `error` → `failed`).
 
 ### Polling worker
 
 `SessionPoller` (started by `buildApp()` once the server is ready, interval `POLL_INTERVAL_MS`,
 30s by default) calls
-`GET /sessions/{id}` for every `working` / `blocked` run and stores the new status, the ACU cost and
-the pull request URL (`pull_requests[0].pr_url`, falling back to `structured_output.pr_url`).
+`GET /sessions/{id}` for every `working` / `blocked` / `needs_human_attention` run and stores the
+new status, the reported `outcome`, the ACU cost and the pull request URL (`pull_requests[0].pr_url`,
+falling back to `structured_output.pr_url`).
+
+A session the API still reports as blocked is resolved from its structured output:
+
+- `pr_created` / `no_action_needed` → `finished` (the session reached a conclusion and ended its
+  turn; `no_action_needed` is a legitimate completion without a pull request);
+- `blocked_on_question` → `needs_human_attention`;
+- no structured output yet → stays `blocked` until it has been blocked for longer than the grace
+  period (`blockedGraceMs`, 10 minutes by default), after which it becomes `needs_human_attention`.
+  `needs_human_attention` runs keep being polled, so a human answering the session still moves it to
+  a terminal status.
 Tracking stops at that point: the Devin API does not report whether the pull request was merged, so
 `pr_merged_at` stays null until a GitHub-side integration (polling the PR, or a `pull_request`
 `closed`/`merged` webhook) is added — that is deliberately out of scope for this session.
@@ -243,7 +262,11 @@ Tracking stops at that point: the Devin API does not report whether the pull req
 
 `computeMetrics()` aggregates the whole `runs` table and backs `GET /dashboard/metrics`:
 
-- **success rate** — runs with `status = finished` **and** a `pr_url`, divided by all runs;
+- **success rate** — `(remediated + no_action_needed) / totalRuns`; it measures whether Devin
+  completed the run on its own, not merely whether a pull request exists, so a legitimate "nothing
+  to fix" conclusion no longer counts as a failure;
+- **outcome breakdown** — `remediated` (finished with a pull request), `noActionNeeded` (finished
+  with nothing to fix) and `needsHumanAttention` (stalled waiting for a human);
 - **failure breakdown** — `dispatch_failed` and `failed` counts and rates reported separately, so a
   broken dispatch path (Devin API down) is distinguishable from sessions that ran and failed;
 - **MTTR** — average of `pr_url_recorded_at - detected_at` over the runs that produced a PR;
@@ -259,12 +282,15 @@ curl http://localhost:3000/dashboard/metrics
 
 Open <http://localhost:3000/dashboard> (`docker compose up --build` or `npm run dev`).
 
-- **Summary cards** — success rate, dispatch failures and session failures **as separate cards**
+- **Summary cards** — success rate (with the remediated / no-action-needed split in its detail
+  line), remediated, no action needed and needs human attention, dispatch failures and session
+  failures **as separate cards**
   (so a permanently broken Devin API is visible at a glance rather than hidden in a single failure
   number), MTTR, throughput over the last 24 hours and the total ACU cost, annotated as approximate
   whenever some runs have no cost reported yet.
 - **Recent runs table** — the 20 newest runs with issue number, colour-coded status
-  (finished = green, working/blocked = blue, dispatch_failed/failed = red, pending = grey), trigger
+  (finished = green, working/blocked = blue, needs_human_attention/dispatch_failed/failed = red,
+  pending = grey), trigger
   type, detection time, pull request link and elapsed time.
 - **Trend** — a minimal inline SVG line chart of the daily success rate over the last 7 days. Days
   without any run carry `successRate: null` and break the line instead of being drawn at 0%.

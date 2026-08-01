@@ -37,8 +37,8 @@ function fakeLogger() {
   };
 }
 
-function fakeClient(createSession: ReturnType<typeof vi.fn>): DevinClient {
-  return { createSession } as unknown as DevinClient;
+function fakeClient(createRemediationSession: ReturnType<typeof vi.fn>): DevinClient {
+  return { createRemediationSession } as unknown as DevinClient;
 }
 
 describe("prompt and tags", () => {
@@ -48,6 +48,15 @@ describe("prompt and tags", () => {
     expect(prompt).toContain("issue #42");
     expect(prompt).toContain("ikeike443/a-sample-coding-agent");
     expect(prompt).toContain("devin-remediate");
+  });
+
+  it("asks for the structured output that ends the session's turn", () => {
+    const prompt = buildPrompt(event());
+
+    expect(prompt).toContain("structured output");
+    for (const outcome of ["pr_created", "no_action_needed", "blocked_on_question"]) {
+      expect(prompt).toContain(outcome);
+    }
   });
 
   it("tags the session with the issue number and the trigger", () => {
@@ -71,6 +80,7 @@ describe("dispatchToDevin", () => {
 
     expect(createSession).toHaveBeenCalledTimes(1);
     expect(createSession.mock.calls[0]?.[0]).toMatchObject({
+      prompt: expect.stringContaining("issue #42") as unknown as string,
       tags: ["remediation", "trigger-webhook", "issue-42"],
       maxAcuLimit: ACU_LIMIT,
       idempotent: true,

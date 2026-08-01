@@ -20,6 +20,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     prMergedAt: null,
     acuCost: null,
     errorMessage: null,
+    outcome: null,
+    blockedSince: null,
     ...overrides,
   };
 }
@@ -62,6 +64,38 @@ describe("computeMetrics", () => {
     expect(metrics.totalRuns).toBe(4);
     expect(metrics.successfulRuns).toBe(1);
     expect(metrics.successRate).toBe(0.25);
+  });
+
+  it("counts a no_action_needed completion as a success, not a failure", () => {
+    const metrics = computeMetrics(
+      [
+        finished({ outcome: "pr_created" }),
+        finished({ outcome: "no_action_needed", prUrl: null, prUrlRecordedAt: null }),
+        run({ status: "needs_human_attention", blockedSince: "2026-01-01T00:00:00.000Z" }),
+        run({ status: "failed" }),
+      ],
+      NOW,
+    );
+
+    expect(metrics.outcomes).toEqual({
+      remediated: 1,
+      noActionNeeded: 1,
+      needsHumanAttention: 1,
+    });
+    // (remediated + noActionNeeded) / totalRuns — the old definition scored 0.25.
+    expect(metrics.successfulRuns).toBe(2);
+    expect(metrics.successRate).toBe(0.5);
+    expect(metrics.statusCounts.needs_human_attention).toBe(1);
+  });
+
+  it("keeps a blocked_on_question completion out of the success rate", () => {
+    const metrics = computeMetrics(
+      [finished({ outcome: "pr_created" }), run({ status: "needs_human_attention" })],
+      NOW,
+    );
+
+    expect(metrics.successRate).toBe(0.5);
+    expect(metrics.outcomes.needsHumanAttention).toBe(1);
   });
 
   it("splits the failures into dispatch failures and session failures", () => {

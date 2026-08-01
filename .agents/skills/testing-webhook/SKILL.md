@@ -133,6 +133,41 @@ console.log(db.prepare("select run_id,issue_ref,status,session_id,pr_url,acu_cos
   script inside the container: `docker cp seed.js <container>:/tmp/ && docker exec <container> node /tmp/seed.js`, using
   `require('/app/node_modules/better-sqlite3')` and `INSERT OR REPLACE INTO runs (...)`.
 
+## Seeding the dashboard (local `npm run seed` vs. the production image)
+
+`scripts/seed.ts` inserts backdated fake runs through the real store API. Two entry points:
+
+- `npm run seed` — needs `tsx` (devDependency), so it only works in a dev checkout.
+- `npm run seed:dist` — `node dist-seed/scripts/seed.js`, compiled by `npm run build:seed`
+  (`tsconfig.seed.json`) in the Docker build. This is the one that works inside the production image / Render Shell,
+  which has neither `tsx` nor devDependencies (`ls node_modules/.bin | grep tsx` should be empty there).
+
+To reproduce the Render setup locally:
+
+```bash
+docker build -t seedtest .
+docker volume create seeddata
+docker run -d --name seedtest -p 3000:3000 -v seeddata:/var/data \
+  -e DATABASE_URL=file:/var/data/orchestrator.sqlite -e GITHUB_WEBHOOK_SECRET=test-secret seedtest
+docker exec seedtest npm run seed:dist                  # 7 days
+docker exec -e SEED_DAYS=14 seedtest npm run seed:dist  # different window
+```
+
+Assertions worth making (they distinguish a working seed from a broken one):
+
+- stdout `Seeded N run(s) across D day(s) into /var/data/orchestrator.sqlite` and, on re-runs,
+  `Replaced N previously seeded run(s).`; re-running must keep `totalRuns` from `GET /dashboard/metrics` constant.
+- Seeded rows use `seed-%` run ids and issue numbers from 900000 up, so a real run created beforehand (send a signed
+  webhook first) must still be in the table afterwards — count `run_id LIKE 'seed-%'` vs `NOT LIKE` inside the container.
+- No timestamp in the future: check `detected_at`, `session_started_at`, `session_finished_at`, `blocked_since`,
+  `pr_url_recorded_at`, `outcome_reported_at` against `new Date().toISOString()`.
+- The trend in `view.successRateTrend` is always the last 7 UTC days regardless of `SEED_DAYS`; the dashboard SVG has no
+  axis labels, so verify the dates via `/dashboard/metrics` and use the screenshot only for "a 7-point line is drawn".
+- Deleting the fake data (README one-liner) works even though `package.json` is `type: module`, because `node -e` is CJS:
+  `docker exec <c> node -e "new (require('better-sqlite3'))(process.env.DATABASE_URL.replace(/^file:/,'')).prepare(\"DELETE FROM runs WHERE run_id LIKE 'seed-%'\").run()"`
+
+Note the dashboard page lives at `GET /dashboard` and its JSON at `GET /dashboard/metrics` — there is no `/api/dashboard`.
+
 ## Devin Secrets Needed
 
 None — the webhook secret is arbitrary for local testing (`GITHUB_WEBHOOK_SECRET=test-secret`), and `DEVIN_API_KEY` /

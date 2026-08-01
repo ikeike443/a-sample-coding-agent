@@ -5,8 +5,10 @@ Pull Request events via webhooks, decides which Devin sessions to start, tracks 
 stores their outcomes (success rate, latency, cost) so they can be visualised on a dashboard.
 
 The HTTP server, directory layout, Docker setup, test harness and CI pipeline are in place, and the
-GitHub webhook intake, the Devin V3 API client and the observability layer (SQLite store, polling
-worker, metrics API) are implemented. The dashboard UI is filled in during a follow-up session.
+GitHub webhook intake, the Devin V3 API client, the observability layer (SQLite store, polling
+worker, metrics API) and the dashboard UI are implemented.
+
+Dashboard: <http://localhost:3000/dashboard>
 
 ## GitHub webhook intake
 
@@ -83,7 +85,8 @@ npm run build && npm start
 | ------ | -------------------- | ----------------------------------------- |
 | GET    | `/health`            | Implemented; 200 `{"status":"ok","uptime":n}` |
 | POST   | `/webhook/github`    | Implemented; HMAC-verified intake, dedupe, normalisation, Devin session creation |
-| GET    | `/dashboard/metrics` | Implemented; success rate, failure breakdown, MTTR, throughput, ACU cost |
+| GET    | `/dashboard/metrics` | Implemented; success rate, failure breakdown, MTTR, throughput, ACU cost, plus the rendered `view` model |
+| GET    | `/dashboard`         | Implemented; auto-refreshing HTML dashboard |
 
 ## Layout and upcoming components
 
@@ -95,7 +98,7 @@ src/
   webhook/          Issue/PR webhook intake
   devin-client/     Devin V3 API wrapper
   observability/    SQLite run store, metrics and polling worker
-  dashboard/        dashboard UI / metrics API
+  dashboard/        dashboard UI (page + assets) and metrics API
 tests/              Vitest test suite
 ```
 
@@ -121,7 +124,11 @@ tests/              Vitest test suite
   concurrent clients retrying a failing Devin API do not hit it in lockstep.
 - **`src/observability/`**: implemented. SQLite persistence of runs, metric computation and the
   background polling worker — see [Observability](#observability).
-- **`src/dashboard/`**: UI showing those metrics and the session list, and the JSON API behind it.
+- **`src/dashboard/`**: implemented — see [Dashboard](#dashboard). `view-model.ts` turns the metrics
+  and the run history into everything the page displays (summary cards, the recent-runs table rows,
+  status colour buckets, the success-rate trend); `index.ts` serves that view model on
+  `GET /dashboard/metrics` alongside the raw metrics, and serves the page and its assets from
+  `src/dashboard/public/`.
 
 ## Observability
 
@@ -181,6 +188,29 @@ Tracking stops at that point: the Devin API does not report whether the pull req
 curl http://localhost:3000/dashboard/metrics
 ```
 
+## Dashboard
+
+Open <http://localhost:3000/dashboard> (`docker compose up --build` or `npm run dev`).
+
+- **Summary cards** — success rate, dispatch failures and session failures **as separate cards**
+  (so a permanently broken Devin API is visible at a glance rather than hidden in a single failure
+  number), MTTR, throughput over the last 24 hours and the total ACU cost, annotated as approximate
+  whenever some runs have no cost reported yet.
+- **Recent runs table** — the 20 newest runs with issue number, colour-coded status
+  (finished = green, working/blocked = blue, dispatch_failed/failed = red, pending = grey), trigger
+  type, detection time, pull request link and elapsed time.
+- **Trend** — a minimal inline SVG line chart of the daily success rate over the last 7 days.
+- **Empty state** — with no history the page shows “まだ実行がありません / No runs recorded yet.”
+  instead of an empty table.
+- **Live updates** — the page polls `GET /dashboard/metrics` every 5 seconds and repaints; no manual
+  reload is needed.
+
+The page is plain HTML, CSS and a browser-native ES module (no UI framework or chart library). All
+formatting and colour decisions live in `src/dashboard/view-model.ts` on the server, so the browser
+script only writes DOM nodes and the display logic is covered by Vitest
+(`tests/dashboard-view-model.test.ts`, `tests/dashboard.test.ts`). `npm run build` copies
+`src/dashboard/public/` into `dist/` (`npm run copy:assets`).
+
 ## Environment variables
 
 See `.env.example`. Today `PORT`, `HOST`, `LOG_LEVEL`, `GITHUB_WEBHOOK_SECRET`, `DEVIN_API_KEY`,
@@ -198,4 +228,4 @@ pull request.
 ## Session tags
 
 `orchestrator-build`, `session-1-skeleton`, `session-2-webhook`, `session-3-devin-client`,
-`session-4-observability`
+`session-4-observability`, `session-5-dashboard`

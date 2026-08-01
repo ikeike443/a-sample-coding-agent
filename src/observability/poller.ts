@@ -77,7 +77,9 @@ export class SessionPoller {
     }
 
     this.timer = setInterval(() => {
-      void this.pollOnce();
+      void this.pollOnce().catch((error: unknown) => {
+        this.options.logger.error({ err: error }, "session poll failed");
+      });
     }, this.intervalMs);
     this.timer.unref?.();
   }

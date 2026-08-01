@@ -143,6 +143,35 @@ describe("SessionPoller", () => {
     );
   });
 
+  it("keeps ticking when the store itself throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const runs = store();
+      const listActiveRuns = vi.spyOn(runs, "listActiveRuns").mockImplementation(() => {
+        throw new Error("database is locked");
+      });
+      const logger = fakeLogger();
+
+      const poller = new SessionPoller({
+        store: runs,
+        client: fakeClient(vi.fn()),
+        logger,
+        intervalMs: 30_000,
+      });
+      poller.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      poller.stop();
+
+      expect(listActiveRuns).toHaveBeenCalledTimes(2);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        "session poll failed",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("polls on the configured interval once started", async () => {
     vi.useFakeTimers();
     try {

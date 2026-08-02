@@ -51,6 +51,7 @@ function mulberry32(seed: number): () => number {
 type Scenario =
   | "remediated"
   | "remediated_merged"
+  | "pr_rejected"
   | "no_action_needed"
   | "issue_closed"
   | "needs_human_attention"
@@ -79,6 +80,7 @@ interface GeneratedRun {
 const TERMINAL_SCENARIOS: { scenario: Scenario; weight: number }[] = [
   { scenario: "remediated", weight: 5 },
   { scenario: "remediated_merged", weight: 4 },
+  { scenario: "pr_rejected", weight: 1 },
   { scenario: "no_action_needed", weight: 3 },
   { scenario: "issue_closed", weight: 2 },
   { scenario: "needs_human_attention", weight: 2 },
@@ -155,6 +157,7 @@ function generateRuns(days: number, now: Date, rand: () => number): GeneratedRun
 const OUTCOME_BY_SCENARIO: Partial<Record<Scenario, RemediationOutcome>> = {
   remediated: "pr_created",
   remediated_merged: "pr_created",
+  pr_rejected: "pr_created",
   no_action_needed: "no_action_needed",
   needs_human_attention: "blocked_on_question",
   blocked: "blocked_on_question",
@@ -185,10 +188,9 @@ function applyScenario(store: SqliteRunStore, run: GeneratedRun, setClock: (at: 
   store.markWorking(run.runId, run.sessionId);
 
   const outcome = OUTCOME_BY_SCENARIO[run.scenario] ?? null;
-  const prUrl =
-    run.scenario === "remediated" || run.scenario === "remediated_merged"
-      ? `https://github.com/ikeike443/a-sample-coding-agent/pull/${run.issueRef}`
-      : null;
+  const prUrl = ["remediated", "remediated_merged", "pr_rejected"].includes(run.scenario)
+    ? `https://github.com/ikeike443/a-sample-coding-agent/pull/${run.issueRef}`
+    : null;
 
   switch (run.scenario) {
     case "working":
@@ -223,10 +225,12 @@ function applyScenario(store: SqliteRunStore, run: GeneratedRun, setClock: (at: 
 
     case "remediated":
     case "remediated_merged":
+    case "pr_rejected":
     case "no_action_needed":
       setClock(finishedAt);
       store.applySessionUpdate(run.runId, {
-        status: "finished",
+        status: run.scenario === "pr_rejected" ? "pr_rejected" : "finished",
+        prClosed: run.scenario === "pr_rejected",
         outcome,
         prUrl,
         prMerged: run.scenario === "remediated_merged",

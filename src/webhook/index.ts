@@ -100,6 +100,25 @@ export async function registerWebhookRoutes(
         .send({ status: "issue_closed", issueNumber: event.issueNumber, runs: closed.length });
     }
 
+    if (event.pullRequestClosed && event.pullRequestUrl !== undefined) {
+      const affected =
+        options.store?.markPullRequestClosed(event.pullRequestUrl, event.pullRequestMerged) ?? [];
+      request.log.info(
+        {
+          deliveryId,
+          prUrl: event.pullRequestUrl,
+          merged: event.pullRequestMerged,
+          runs: affected.map((run) => run.runId),
+        },
+        "pull request closed; runs settled",
+      );
+      return reply.code(200).send({
+        status: event.pullRequestMerged ? "pull_request_merged" : "pull_request_rejected",
+        prUrl: event.pullRequestUrl,
+        runs: affected.length,
+      });
+    }
+
     if (!event.actionable) {
       return reply.code(200).send({ status: "ignored", reason: event.reason });
     }

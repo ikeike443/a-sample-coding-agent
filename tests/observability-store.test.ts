@@ -120,7 +120,82 @@ describe("SqliteRunStore state transitions", () => {
       acuCost: 3.5,
       prMergedAt: null,
     });
+    // Still watched: the session can be resumed by a human for a while yet.
+    expect(runs.listActiveRuns().map((r) => r.runId)).toEqual([run.runId]);
+
+    now.mockReturnValue(new Date("2026-01-03T01:00:00.000Z"));
     expect(runs.listActiveRuns()).toEqual([]);
+  });
+
+  it("reopens a finished run whose session went back to work", () => {
+    const now = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = store(now);
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(run.runId, "devin-123");
+    now.mockReturnValue(new Date("2026-01-01T01:00:00.000Z"));
+    runs.applySessionUpdate(run.runId, { status: "finished", outcome: "pr_created" });
+
+    now.mockReturnValue(new Date("2026-01-01T02:00:00.000Z"));
+    const reopened = runs.applySessionUpdate(run.runId, {
+      status: "working",
+      outcome: "pr_created",
+    });
+
+    expect(reopened).toMatchObject({
+      status: "working",
+      sessionFinishedAt: null,
+      // The outcome clock restarts with the new turn.
+      outcomeReportedAt: "2026-01-01T02:00:00.000Z",
+    });
+  });
+
+  it("settles a run on its pull request being closed, merged or not", () => {
+    const now = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
+    const runs = store(now);
+    const prUrl = "https://github.com/o/r/pull/9";
+    const rejected = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(rejected.runId, "devin-123");
+    runs.applySessionUpdate(rejected.runId, { status: "working", prUrl });
+
+    now.mockReturnValue(new Date("2026-01-01T03:00:00.000Z"));
+    const settled = runs.markPullRequestClosed(prUrl, false);
+
+    expect(settled).toHaveLength(1);
+    expect(runs.getRun(rejected.runId)).toMatchObject({
+      status: "pr_rejected",
+      prClosedAt: "2026-01-01T03:00:00.000Z",
+      prMergedAt: null,
+      sessionFinishedAt: "2026-01-01T03:00:00.000Z",
+    });
+
+    const merged = runs.recordEvent({ triggerType: "webhook", issueRef: 8 });
+    runs.markWorking(merged.runId, "devin-456");
+    runs.applySessionUpdate(merged.runId, {
+      status: "working",
+      prUrl: "https://github.com/o/r/pull/10",
+    });
+    runs.markPullRequestClosed("https://github.com/o/r/pull/10", true);
+
+    expect(runs.getRun(merged.runId)).toMatchObject({
+      status: "finished",
+      prMergedAt: "2026-01-01T03:00:00.000Z",
+      prClosedAt: null,
+    });
+  });
+
+  it("leaves a failed run's status alone when its pull request is closed", () => {
+    const runs = store(() => new Date("2026-01-01T00:00:00.000Z"));
+    const prUrl = "https://github.com/o/r/pull/9";
+    const run = runs.recordEvent({ triggerType: "webhook", issueRef: 7 });
+    runs.markWorking(run.runId, "devin-123");
+    runs.applySessionUpdate(run.runId, { status: "failed", prUrl });
+
+    runs.markPullRequestClosed(prUrl, false);
+
+    expect(runs.getRun(run.runId)).toMatchObject({
+      status: "failed",
+      prClosedAt: "2026-01-01T00:00:00.000Z",
+    });
   });
 
   it("keeps a session that failed after creation distinguishable from a failed dispatch", () => {

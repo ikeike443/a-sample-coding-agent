@@ -1,5 +1,10 @@
 import type { OrchestratorMetrics } from "../observability/index.js";
-import { isSuccessful, type RunRecord, type RunStatus } from "../observability/index.js";
+import {
+  TERMINAL_STATUSES,
+  isSuccessful,
+  type RunRecord,
+  type RunStatus,
+} from "../observability/index.js";
 
 /** Colour bucket a status is rendered with; the CSS owns the actual colours. */
 export type StatusTone = "success" | "progress" | "danger" | "neutral";
@@ -25,6 +30,9 @@ export interface RunRow {
   /** The pull request has been merged, per the Devin API's `pr_state`. */
   prMerged: boolean;
   prMergedAtLabel: string | null;
+  /** The pull request was closed without being merged. */
+  prRejected: boolean;
+  prClosedAtLabel: string | null;
   /** When the run's GitHub issue was observed closed, if it was. */
   issueClosedAtLabel: string | null;
   sessionUrl: string | null;
@@ -62,6 +70,7 @@ const STATUS_TONES: Record<RunStatus, StatusTone> = {
   needs_human_attention: "danger",
   dispatch_failed: "danger",
   failed: "danger",
+  pr_rejected: "danger",
   pending: "neutral",
 };
 
@@ -72,6 +81,7 @@ const STATUS_LABELS: Record<RunStatus, string> = {
   needs_human_attention: "Needs human attention",
   dispatch_failed: "Dispatch failed",
   failed: "Failed",
+  pr_rejected: "PR closed unmerged",
   pending: "Pending",
 };
 
@@ -131,8 +141,6 @@ export function isDemoRun(runId: string): boolean {
 export function sessionUrl(sessionId: string | null): string | null {
   return sessionId === null || sessionId === "" ? null : `${DEVIN_SESSION_BASE_URL}/${sessionId}`;
 }
-
-const TERMINAL_STATUSES: RunStatus[] = ["dispatch_failed", "finished", "failed"];
 
 /**
  * Time the run has been alive. Terminal runs without a finish timestamp — a
@@ -195,6 +203,13 @@ export function buildSummaryCards(metrics: OrchestratorMetrics): SummaryCard[] {
       value: `${outcomes.issueClosed}`,
       detail: "Runs resolved by the issue being closed, without a pull request of their own",
       tone: "success",
+    },
+    {
+      id: "pr-rejected",
+      label: "PRs closed unmerged",
+      value: `${outcomes.prRejected}`,
+      detail: "Runs whose pull request was closed without being merged — not counted as resolved",
+      tone: outcomes.prRejected > 0 ? "danger" : "success",
     },
     {
       id: "needs-human-attention",
@@ -269,6 +284,8 @@ export function buildRecentRuns(
       prUrl: run.prUrl,
       prMerged: run.prMergedAt !== null,
       prMergedAtLabel: run.prMergedAt === null ? null : formatTimestamp(run.prMergedAt),
+      prRejected: run.prMergedAt === null && run.prClosedAt !== null,
+      prClosedAtLabel: run.prClosedAt === null ? null : formatTimestamp(run.prClosedAt),
       issueClosedAtLabel: run.issueClosedAt === null ? null : formatTimestamp(run.issueClosedAt),
       sessionUrl: sessionUrl(run.sessionId),
       isDemo: isDemoRun(run.runId),

@@ -19,6 +19,12 @@ export interface NormalisedEvent {
   actionable: boolean;
   /** The delivery reports the issue as closed, so its runs can be closed out. */
   issueClosed: boolean;
+  /** The delivery reports a pull request as closed, merged or not. */
+  pullRequestClosed: boolean;
+  /** Set alongside `pullRequestClosed`; the pull request the run produced. */
+  pullRequestUrl?: string;
+  /** Whether the closed pull request was merged rather than discarded. */
+  pullRequestMerged: boolean;
   reason: string;
 }
 
@@ -26,7 +32,7 @@ interface GitHubPayload {
   action?: unknown;
   repository?: { full_name?: unknown };
   issue?: { number?: unknown; labels?: unknown };
-  pull_request?: { number?: unknown; labels?: unknown };
+  pull_request?: { number?: unknown; labels?: unknown; html_url?: unknown; merged?: unknown };
   label?: { name?: unknown };
 }
 
@@ -66,8 +72,10 @@ export function isSupportedEvent(event: string): event is SupportedEvent {
  * decides whether it should be handed to the Devin client.
  *
  * Only `issues` deliveries carrying the `devin-remediate` label are actionable
- * today; everything else is acknowledged and ignored. `issues.closed` is a
- * special case: it dispatches nothing but closes out the issue's runs.
+ * today; everything else is acknowledged and ignored. Two deliveries are
+ * special cases that dispatch nothing but do resolve existing runs:
+ * `issues.closed` closes out the issue's runs, and `pull_request.closed`
+ * records whether the run's pull request was merged or discarded.
  */
 export function normaliseEvent(
   deliveryId: string,
@@ -86,11 +94,29 @@ export function normaliseEvent(
     labels,
     actionable: false,
     issueClosed: false,
+    pullRequestClosed: false,
+    pullRequestMerged: false,
     reason: "",
   };
 
   if (!isSupportedEvent(event)) {
     return { ...base, reason: "unsupported_event" };
+  }
+
+  // A closed pull request settles the run behind it: merged means the work
+  // landed, closed unmerged means it was thrown away. Either way the run's
+  // status stops depending on a session the poller may no longer watch.
+  if (event === "pull_request" && base.action === "closed") {
+    const url = asString(body.pull_request?.html_url);
+    return url === undefined
+      ? { ...base, reason: "pull_request_without_url" }
+      : {
+          ...base,
+          pullRequestClosed: true,
+          pullRequestUrl: url,
+          pullRequestMerged: body.pull_request?.merged === true,
+          reason: "pull_request_closed",
+        };
   }
 
   if (event !== "issues") {

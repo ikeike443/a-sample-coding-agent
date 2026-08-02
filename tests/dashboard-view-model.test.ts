@@ -91,6 +91,7 @@ describe("buildSummaryCards", () => {
       "remediated",
       "no-action-needed",
       "issue-closed",
+      "pr-rejected",
       "needs-human-attention",
       "dispatch-failed",
       "session-failed",
@@ -319,6 +320,7 @@ describe("buildDashboardViewModel", () => {
     expect(view.successRateTrend.every((point) => point.successRate === null)).toBe(true);
     expect(view.cards.map((card) => card.value)).toEqual([
       "0.0%",
+      "0",
       "0",
       "0",
       "0",

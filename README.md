@@ -71,7 +71,9 @@ dashboard reads.
 3. **Normalisation** — `X-GitHub-Event` selects the handler for `issues`, `issue_comment` and
    `pull_request`. Only `issues` deliveries with `action: labeled` and the `devin-remediate` label
    are actionable; every other delivery is logged and acknowledged with `200` so GitHub does not
-   see an error.
+   see an error. Two deliveries dispatch nothing but still update existing runs: `issues.closed`
+   closes out the issue's runs, and `pull_request.closed` settles the runs behind that pull request
+   as merged or `pr_rejected`.
 4. **Dispatch** — actionable events are passed to `dispatchToDevin()` in `src/webhook/dispatch.ts`
    without awaiting it, so the handler responds immediately. It builds a prompt from the issue and
    repository, creates a Devin session tagged
@@ -292,10 +294,11 @@ are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-sh
 | `detected_at`         | TEXT    | ISO-8601, set on intake                                                       |
 | `session_started_at`  | TEXT    | ISO-8601, set when the session was created                                    |
 | `session_finished_at` | TEXT    | ISO-8601, set when the session reached a terminal state                       |
-| `status`              | TEXT    | `pending` \| `dispatch_failed` \| `working` \| `blocked` \| `needs_human_attention` \| `finished` \| `failed` |
+| `status`              | TEXT    | `pending` \| `dispatch_failed` \| `working` \| `blocked` \| `needs_human_attention` \| `finished` \| `pr_rejected` \| `failed` |
 | `pr_url`              | TEXT    | Pull request opened by the session, nullable                                  |
 | `pr_url_recorded_at`  | TEXT    | ISO-8601 stamp of when `pr_url` was first seen; the MTTR end point            |
-| `pr_merged_at`        | TEXT    | Always null today, see below                                                  |
+| `pr_merged_at`        | TEXT    | ISO-8601 stamp of when the pull request was first seen merged, nullable       |
+| `pr_closed_at`        | TEXT    | ISO-8601 stamp of when the pull request was seen closed **without** merging   |
 | `acu_cost`            | REAL    | `acus_consumed` reported by the Devin API, nullable                           |
 | `error_message`       | TEXT    | Dispatch or session error, nullable                                           |
 | `outcome`             | TEXT    | `pr_created` \| `no_action_needed` \| `blocked_on_question` from the structured output, nullable |
@@ -310,12 +313,22 @@ are configured) and is drained on shutdown; see [Graceful shutdown](#graceful-sh
 4. `blocked` / `needs_human_attention` / `finished` / `failed` — written by the polling worker from
    the Devin session status (`suspended`/`blocked` → `blocked`, `exit` → `finished`,
    `error` → `failed`).
+5. `pr_rejected` — the run's pull request was closed without being merged, so its work was
+   discarded. Written either by the poller (`pull_requests[].pr_state === "closed"`) or by the
+   `pull_request.closed` webhook. It is a terminal status and is **not** counted as a success.
+
+A terminal status is not permanent: the poller keeps watching a run's session for `RESUME_WATCH_MS`
+(24 hours) after it finished, and reopens the run as `working` / `blocked` when the session does
+more work — a human replying to a finished session no longer leaves the dashboard claiming
+`Finished`. Renewed work is required (ACUs burnt since the run was closed out, or a changed
+outcome); a session merely left `running` after reporting its result does not reopen anything.
 
 ### Polling worker
 
 `SessionPoller` (started by `buildApp()` once the server is ready, interval `POLL_INTERVAL_MS`,
 30s by default) calls
-`GET /sessions/{id}` for every `working` / `blocked` / `needs_human_attention` run and stores the
+`GET /sessions/{id}` for every `working` / `blocked` / `needs_human_attention` run — plus every run
+that reached a terminal status within the last `RESUME_WATCH_MS` — and stores the
 new status, the reported `outcome`, the ACU cost and the pull request URL (`pull_requests[0].pr_url`,
 falling back to `structured_output.pr_url`).
 
@@ -329,9 +342,10 @@ A session the API still reports as blocked is resolved from its structured outpu
   `needs_human_attention`. `needs_human_attention` runs keep being polled, so a human answering the
   session still moves it to a terminal status.
 
-Tracking stops at that point: the Devin API does not report whether the pull request was merged, so
-`pr_merged_at` stays null until a GitHub-side integration (polling the PR, or a `pull_request`
-`closed`/`merged` webhook) is added — that is deliberately out of scope for this session.
+Pull request state comes from both sides: `pull_requests[].pr_state` on every poll, and the
+`pull_request` `closed` delivery, which is matched to runs by `html_url` and settles them even when
+the poller has stopped watching their session. Merged fills `pr_merged_at` and finishes the run;
+closed without merging fills `pr_closed_at` and marks it `pr_rejected`.
 
 ### Metrics
 
@@ -341,7 +355,8 @@ Tracking stops at that point: the Devin API does not report whether the pull req
   completed the run on its own, not merely whether a pull request exists, so a legitimate "nothing
   to fix" conclusion no longer counts as a failure;
 - **outcome breakdown** — `remediated` (finished with a pull request), `noActionNeeded` (finished
-  with nothing to fix) and `needsHumanAttention` (stalled waiting for a human);
+  with nothing to fix), `needsHumanAttention` (stalled waiting for a human) and `prRejected` (the
+  pull request was closed unmerged, which is not a success);
 - **failure breakdown** — `dispatch_failed` and `failed` counts and rates reported separately, so a
   broken dispatch path (Devin API down) is distinguishable from sessions that ran and failed;
 - **MTTR** — average of `pr_url_recorded_at - detected_at` over the runs that produced a PR;

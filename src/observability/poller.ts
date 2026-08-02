@@ -5,6 +5,7 @@ import type {
   SessionStatus,
 } from "../devin-client/index.js";
 import { parseRemediationOutcome } from "../devin-client/index.js";
+import { TERMINAL_STATUSES } from "./store.js";
 import type { RunRecord, RunStatus, RunStore, SessionUpdate } from "./store.js";
 
 export const DEFAULT_POLL_INTERVAL_MS = 30_000;
@@ -41,6 +42,12 @@ export interface SessionUpdateContext {
   outcomeReportedAt?: string | null;
   blockedGraceMs?: number;
   now?: Date;
+  /** What the store currently holds for the run, used to detect resumption. */
+  previousStatus?: RunStatus;
+  previousOutcome?: RemediationOutcome | null;
+  previousAcuCost?: number | null;
+  /** GitHub already settled the run's issue or pull request for good. */
+  subjectSettled?: boolean;
 }
 
 /** Maps the Devin session status onto the orchestrator run status. */
@@ -82,6 +89,11 @@ export function isPrMerged(detail: SessionDetail): boolean {
   return apiPullRequest(detail)?.pr_state === "merged";
 }
 
+/** True once the API reports the session's pull request as closed unmerged. */
+export function isPrRejected(detail: SessionDetail): boolean {
+  return apiPullRequest(detail)?.pr_state === "closed";
+}
+
 /**
  * A pull request that is merged or closed can no longer change, so the session
  * has nothing left to do on it.
@@ -91,9 +103,21 @@ function prSettled(detail: SessionDetail): boolean {
   return state === "merged" || state === "closed";
 }
 
-/** Status a blocked session with a reported outcome is really in. */
-function statusForOutcome(outcome: RemediationOutcome): RunStatus {
-  return outcome === "blocked_on_question" ? "needs_human_attention" : "finished";
+/** Session states in which the session may still do work. */
+function sessionIsLive(status: SessionStatus | undefined): boolean {
+  return status !== undefined && status !== "exit" && status !== "error";
+}
+
+/**
+ * Terminal status of a session that reported an outcome. A run whose pull
+ * request was closed unmerged did produce work, but the work was discarded, so
+ * it settles as `pr_rejected` rather than as a completion.
+ */
+function statusForOutcome(outcome: RemediationOutcome, detail: SessionDetail): RunStatus {
+  if (outcome === "blocked_on_question") {
+    return "needs_human_attention";
+  }
+  return isPrRejected(detail) ? "pr_rejected" : "finished";
 }
 
 function olderThanGrace(since: string | null | undefined, now: Date, graceMs: number): boolean {
@@ -117,10 +141,11 @@ function olderThanGrace(since: string | null | undefined, now: Date, graceMs: nu
  */
 function resolveBlockedStatus(
   outcome: RemediationOutcome | null,
+  detail: SessionDetail,
   context: SessionUpdateContext,
 ): RunStatus {
   if (outcome !== null) {
-    return statusForOutcome(outcome);
+    return statusForOutcome(outcome, detail);
   }
 
   return olderThanGrace(
@@ -142,7 +167,8 @@ function resolveBlockedStatus(
  * session is still iterating (fixing CI on that very pull request, for
  * instance). Two conservative signals are required instead:
  *
- * - the pull request is merged or closed, so no further work on it is possible;
+ * - the pull request is merged or closed, so no further work on it is possible
+ *   (a closed-unmerged one settling the run as `pr_rejected`);
  * - or the same outcome has been standing for longer than the grace period,
  *   measured from `outcomeReportedAt` (reset whenever the outcome changes, so a
  *   run that stalled earlier is not settled by the first poll that sees a
@@ -161,7 +187,7 @@ function resolveReportedOutcomeStatus(
   }
 
   if (prSettled(detail)) {
-    return "finished";
+    return isPrRejected(detail) ? "pr_rejected" : "finished";
   }
 
   return olderThanGrace(
@@ -169,8 +195,45 @@ function resolveReportedOutcomeStatus(
     context.now ?? new Date(),
     context.blockedGraceMs ?? DEFAULT_BLOCKED_GRACE_MS,
   )
-    ? statusForOutcome(outcome)
+    ? statusForOutcome(outcome, detail)
     : "working";
+}
+
+/**
+ * A run the store had already closed out that is working again, because a human
+ * replied to its session or the session resumed on its own.
+ *
+ * A live session alone does not prove this: sessions routinely stay `running`
+ * after the run settled on their reported outcome, and reopening on that would
+ * flip the run between `working` and its terminal status forever. Renewed work
+ * is required — burnt ACUs or a changed outcome — so the run only reopens when
+ * the session actually did something after being closed out.
+ *
+ * A run whose issue or pull request GitHub already settled never reopens: the
+ * store closed it out while its session kept running, so that session being
+ * busy says nothing about the run.
+ */
+function hasResumed(
+  detail: SessionDetail,
+  outcome: RemediationOutcome | null,
+  context: SessionUpdateContext,
+): boolean {
+  if (
+    context.previousStatus === undefined ||
+    !TERMINAL_STATUSES.includes(context.previousStatus) ||
+    context.subjectSettled === true ||
+    !sessionIsLive(detail.status)
+  ) {
+    return false;
+  }
+
+  const previousAcu = context.previousAcuCost;
+  const acuGrew =
+    typeof previousAcu === "number" &&
+    typeof detail.acus_consumed === "number" &&
+    detail.acus_consumed > previousAcu;
+
+  return acuGrew || outcome !== (context.previousOutcome ?? null);
 }
 
 function resolveStatus(
@@ -179,11 +242,26 @@ function resolveStatus(
   context: SessionUpdateContext,
 ): RunStatus {
   const mapped = mapSessionStatus(detail.status);
+  const previous = context.previousStatus;
+  if (previous !== undefined && TERMINAL_STATUSES.includes(previous)) {
+    if (hasResumed(detail, outcome, context)) {
+      // The grace clocks restart with the new turn, so a stale outcome cannot
+      // re-terminate the run on the very poll that saw it resume.
+      return mapped === "blocked" ? "blocked" : "working";
+    }
+
+    // Nothing new happened; a session left running does not reopen the run.
+    // Its pull request can still be rejected after the fact, though.
+    return previous === "finished" && isPrRejected(detail) ? "pr_rejected" : previous;
+  }
   if (mapped === "blocked") {
-    return resolveBlockedStatus(outcome, context);
+    return resolveBlockedStatus(outcome, detail, context);
   }
   if (mapped === "working" && outcome !== null) {
     return resolveReportedOutcomeStatus(outcome, detail, context);
+  }
+  if (mapped === "finished" && isPrRejected(detail)) {
+    return "pr_rejected";
   }
   return mapped;
 }
@@ -200,15 +278,17 @@ export function buildSessionUpdate(
     outcome,
     prUrl: extractPrUrl(detail),
     prMerged: isPrMerged(detail),
+    prClosed: isPrRejected(detail),
     acuCost: detail.acus_consumed ?? null,
     errorMessage: status === "failed" ? (detail.status_detail ?? "session ended in error") : null,
   };
 }
 
 /**
- * Background worker that refreshes `working` / `blocked` runs from the Devin
- * API. Merge state comes from the session's `pull_requests[].pr_state`, which
- * is what fills `pr_merged_at`.
+ * Background worker that refreshes the store's active runs — plus recently
+ * terminated ones, whose session a human can still resume — from the Devin API.
+ * Pull request state comes from the session's `pull_requests[].pr_state`, which
+ * is what fills `pr_merged_at` and `pr_closed_at`.
  */
 export class SessionPoller {
   private readonly intervalMs: number;
@@ -309,6 +389,11 @@ export class SessionPoller {
     return buildSessionUpdate(detail, {
       blockedSince: run.blockedSince,
       outcomeReportedAt: run.outcomeReportedAt,
+      previousStatus: run.status,
+      previousOutcome: run.outcome,
+      previousAcuCost: run.acuCost,
+      subjectSettled:
+        run.issueClosedAt !== null || run.prClosedAt !== null || run.prMergedAt !== null,
       blockedGraceMs: this.blockedGraceMs,
       now: this.now(),
     });

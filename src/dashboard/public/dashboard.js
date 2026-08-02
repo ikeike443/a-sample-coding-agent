@@ -108,6 +108,14 @@ function renderRuns(tbody, runs) {
           badge.textContent = "Merged";
           badge.title = run.prMergedAtLabel ? `Merged at ${run.prMergedAtLabel} UTC` : "Merged";
           prCell.append(badge);
+        } else if (run.prRejected) {
+          const badge = document.createElement("span");
+          badge.className = "status tone-danger badge";
+          badge.textContent = "Closed unmerged";
+          badge.title = run.prClosedAtLabel
+            ? `Closed without merging at ${run.prClosedAtLabel} UTC`
+            : "Closed without merging";
+          prCell.append(badge);
         }
       } else {
         prCell.textContent = "—";

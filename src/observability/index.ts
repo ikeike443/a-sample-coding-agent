@@ -8,8 +8,10 @@
  */
 export {
   ACTIVE_STATUSES,
+  TERMINAL_STATUSES,
   UNFINISHED_STATUSES,
   PENDING_STALE_MS,
+  RESUME_WATCH_MS,
   SqliteRunStore,
   type RecordEventInput,
   type RunRecord,
@@ -24,6 +26,7 @@ export {
   computeMetrics,
   isClosedWithIssue,
   isNoActionNeeded,
+  isPrRejectedRun,
   isRemediated,
   isSuccessful,
   needsHumanAttention,
@@ -40,6 +43,7 @@ export {
   buildSessionUpdate,
   extractPrUrl,
   isPrMerged,
+  isPrRejected,
   mapSessionStatus,
   type PollerLogger,
   type SessionPollerOptions,

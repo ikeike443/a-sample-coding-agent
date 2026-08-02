@@ -109,9 +109,11 @@ dashboard reads.
 ### Docker Compose (recommended)
 
 ```bash
-cp .env.example .env   # set at least GITHUB_WEBHOOK_SECRET
+# Copy the sample environment; set at least GITHUB_WEBHOOK_SECRET.
+cp .env.example .env
 docker compose up --build
-curl http://localhost:3000/health   # => {"status":"ok","uptime":...}
+# => {"status":"ok","uptime":...}
+curl http://localhost:3000/health
 ```
 
 `GITHUB_WEBHOOK_SECRET` is required: the server aborts at startup if it is unset (see
@@ -119,31 +121,77 @@ curl http://localhost:3000/health   # => {"status":"ok","uptime":...}
 `/app/data` for SQLite persistence, and Compose runs a `GET /health` healthcheck against the
 container.
 
+Leave `DEVIN_API_KEY` / `DEVIN_ORG_ID` **empty** unless you have real credentials: placeholder
+values are sent to the real Devin API, which answers `403 Unauthorized` on every dispatch and on
+every poll. With them empty the webhook still works and deliveries are recorded as
+`dispatch_failed`.
+
+#### Seeding the Compose stack
+
+`npm run seed` runs on the **host** and writes to the host database (`./data/orchestrator.sqlite`
+by default), which is a different file from the `orchestrator-data` volume the container reads —
+the dashboard would stay empty. Seed inside the container instead, using the compiled seed script
+(the image has no `tsx`):
+
+```bash
+docker compose exec app npm run seed:dist
+# => Seeded 37 run(s) across 7 day(s) into /app/data/orchestrator.sqlite
+docker compose exec -e SEED_DAYS=14 app npm run seed:dist
+```
+
+Refresh <http://localhost:3000/dashboard>; the seeded rows carry a grey **DEMO** badge (see
+[Seeding demo data](#seeding-demo-data)). To remove them again:
+
+```bash
+docker compose exec app node -e "new (require('better-sqlite3'))('/app/data/orchestrator.sqlite').prepare(\"DELETE FROM runs WHERE run_id LIKE 'seed-%'\").run()"
+```
+
 #### Simulating a webhook end to end
 
 With the stack running, send a signed `issues`/`labeled` delivery and watch it appear on the
-dashboard:
+dashboard. The snippet reads the secret from `.env` so it cannot drift from the value the server
+is using — a mismatch is what makes the endpoint answer `401 {"error":"invalid_signature"}`:
 
 ```bash
-SECRET="your-webhook-secret"   # must match GITHUB_WEBHOOK_SECRET
+SECRET="$(grep -E '^GITHUB_WEBHOOK_SECRET=' .env | cut -d= -f2- | tr -d '\"'\''')"
 BODY='{"action":"labeled","label":{"name":"devin-remediate"},"repository":{"full_name":"ikeike443/a-sample-coding-agent"},"issue":{"number":1,"labels":[{"name":"devin-remediate"}]}}'
 SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
 
-curl -sS http://localhost:3000/webhook/github \
+curl -sS -w '\n%{http_code}\n' http://localhost:3000/webhook/github \
   -H "content-type: application/json" \
   -H "x-github-event: issues" \
   -H "x-github-delivery: demo-1" \
   -H "x-hub-signature-256: $SIG" \
   -d "$BODY"
-
-curl -sS http://localhost:3000/dashboard/metrics   # totalRuns reflects the delivery
-open http://localhost:3000/dashboard               # or visit in a browser
 ```
 
+A successful delivery answers `{"status":"accepted","deliveryId":"demo-1"}` with `200`. Reusing the
+same `x-github-delivery` value within the dedupe window (10 minutes) returns
+`{"status":"duplicate"}` and records nothing, so use a fresh id per attempt. Then check the result:
+
+```bash
+# totalRuns reflects the delivery
+curl -sS http://localhost:3000/dashboard/metrics
+```
+
+and open <http://localhost:3000/dashboard> in a browser.
+
 Without Devin credentials the run is recorded as `dispatch_failed` (still visible on the dashboard);
-with `DEVIN_API_KEY` / `DEVIN_ORG_ID` set it becomes a `working` run tracked by the poller.
+with real `DEVIN_API_KEY` / `DEVIN_ORG_ID` values it becomes a `working` run tracked by the poller.
+
+Copy the commands **line by line** if your shell is an interactive `zsh` (the macOS default): it
+treats a trailing `# comment` as a command, not as a comment, unless `setopt interactivecomments`
+is enabled.
 
 ### Node.js directly
+
+Nothing loads `.env` outside Docker Compose — `npm run dev`, `npm start` and `npm run seed` read
+the process environment only, so export the file yourself first (otherwise the server aborts with
+`GITHUB_WEBHOOK_SECRET is required`):
+
+```bash
+set -a && . ./.env && set +a
+```
 
 ```bash
 npm ci
@@ -154,7 +202,12 @@ npm run build && npm start
 npm run seed     # fake dashboard runs for the last 7 days (SEED_DAYS / SEED_SEED / DATABASE_URL)
 ```
 
+Host runs and the Compose stack use different databases: `DATABASE_URL` defaults to
+`file:./data/orchestrator.sqlite` here, while the container reads `/app/data/orchestrator.sqlite`
+from the `orchestrator-data` volume.
+
 In the production image `tsx` is absent; use the compiled seed instead — see
+[Seeding the Compose stack](#seeding-the-compose-stack) and
 [Seeding the deployed dashboard](#seeding-the-deployed-dashboard).
 
 ## Endpoints
@@ -338,6 +391,9 @@ SEED_DAYS=14 npm run seed       # a different window
 SEED_SEED=42 npm run seed       # a different but reproducible dataset
 DATABASE_URL=file:./data/demo.sqlite npm run seed   # a throwaway database
 ```
+
+This writes to the **host** database. Running the Compose stack? Seed the container instead — see
+[Seeding the Compose stack](#seeding-the-compose-stack).
 
 The rows are inserted through the real `SqliteRunStore` API, so every derived timestamp is
 consistent with production data. Seeded runs use `seed-` run ids and issue numbers from **900000**

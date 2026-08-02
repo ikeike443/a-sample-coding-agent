@@ -58,6 +58,21 @@ content types leave `request.body` unparsed so the signature check fails with 40
   (non-numeric or <= 0) fall back to the default. The cache is capped (~10k entries) with oldest-first eviction — to test
   it, flood >10k unique delivery ids over a keep-alive `http.Agent` from a small Node script (curl-per-request is too slow),
   then re-send the oldest id (should be `accepted`) and the newest (should be `duplicate`).
+- There are **three** independent duplicate guards; test each with the one that would otherwise mask it disabled or expired:
+  1. delivery-id cache -> `200 {"status":"duplicate"}`;
+  2. trigger cache keyed on `owner/repo#issue:action:devin-remediate` (`WEBHOOK_TRIGGER_IDEMPOTENCY_TTL_MS`, default
+     30 min) -> `200 {"status":"duplicate_trigger","triggerKey":...}` for the same trigger under a *new* delivery id.
+     Set it to ~20 s so you can later prove re-triggering works once it expires;
+  3. store-backed guard `findUnfinishedRunForIssue(repository, issueRef)` -> `200 accepted` but **no** dispatch and no
+     new run, with `issue already has an unfinished run; skipping duplicate dispatch` in the log. Exercise it *after*
+     the trigger TTL expires, otherwise guard 2 hides it.
+  Negative controls that must still dispatch: a different issue number, and the *same* issue number under a different
+  `repository.full_name` (runs are repository-scoped; the `runs` table has a `repository` column).
+- Only the label the delivery *added* (`payload.label.name`) makes a `labeled` event actionable. Regression check:
+  `label.name = "bug"` on an issue whose `issue.labels[]` already contains `devin-remediate` must be
+  `ignored / label_not_matched`, not `accepted`.
+- Note `markIssueClosed(issueRef)` is **not** repository-scoped, so an `issues.closed` for issue #N closes runs for #N
+  in every repository. Keep issue numbers distinct across repos in a test unless you are probing that behaviour.
 
 ## Testing the outbound Devin dispatch without calling the real API
 
@@ -69,6 +84,10 @@ received request (method, url, headers, body, `Date.now()`) to a log file and ca
 DEVIN_API_BASE_URL=http://localhost:4010 DEVIN_API_KEY=fake-key-123 DEVIN_ORG_ID=org-fake-1 \
   DEVIN_MAX_ACU_LIMIT=7 DEVIN_MAX_RETRIES=2 DEVIN_RETRY_INITIAL_DELAY_MS=200 ...
 ```
+
+**Counting dispatches:** the observability poller also calls the fake API with `GET /organizations/<org>/sessions/<id>`
+every few seconds, so a raw line count of the fake-API log over-counts. Count only session *creations*, i.e. requests
+whose url is exactly `/organizations/<org>/sessions`.
 
 Use **non-default** ACU/retry values (defaults are 10 / 3 / 1000 ms) so a hard-coded implementation cannot pass, and a
 small initial delay so a full retry sequence finishes in <1 s. Expectations:

@@ -10,6 +10,23 @@ worker, metrics API) and the dashboard UI are implemented.
 
 Dashboard: <http://localhost:3000/dashboard>
 
+## Demo
+
+![Dashboard with seeded demo data](docs/dashboard-demo.png)
+
+The screenshot above is a dashboard filled with **seeded demo data** so every card, the 7-day trend
+and the recent-runs table have something to show.
+
+- Rows whose issue number is **`#900xxx`** (900000 and up) and that carry a grey **DEMO** badge are
+  fake data written by [`npm run seed`](#seeding-demo-data). Their pull request and Devin session
+  cells are **not clickable**: they are rendered as grey, dashed-underlined text instead of links,
+  because the URLs they point at do not exist.
+- **Real runs are the ones without a DEMO badge**, with ordinary GitHub issue numbers. They appear
+  above the seeded rows as long as they are more recent (the table is sorted newest first), and
+  their pull request and Devin session links are normal blue, clickable links.
+
+See [Seeding demo data](#seeding-demo-data) for how to create and remove the seeded rows.
+
 ## Architecture
 
 ```
@@ -310,6 +327,33 @@ script only writes DOM nodes and the display logic is covered by Vitest
 (`tests/dashboard-view-model.test.ts`, `tests/dashboard.test.ts`). `npm run build` copies
 `src/dashboard/public/` into `dist/` (`npm run copy:assets`).
 
+## Seeding demo data
+
+`scripts/seed.ts` fills the database with backdated fake runs so a fresh dashboard is not empty —
+see [Demo](#demo) for what it looks like.
+
+```bash
+npm run seed                    # 7 days of fake runs into $DATABASE_URL (default ./data/orchestrator.sqlite)
+SEED_DAYS=14 npm run seed       # a different window
+SEED_SEED=42 npm run seed       # a different but reproducible dataset
+DATABASE_URL=file:./data/demo.sqlite npm run seed   # a throwaway database
+```
+
+The rows are inserted through the real `SqliteRunStore` API, so every derived timestamp is
+consistent with production data. Seeded runs use `seed-` run ids and issue numbers from **900000**
+up, which is how the dashboard recognises them (`isDemoRun()` in `src/dashboard/view-model.ts`) and
+renders them as inert demo rows. Re-running the script replaces only the previous fake rows; real
+runs are never touched.
+
+To remove the seeded rows again:
+
+```bash
+node -e "new (require('better-sqlite3'))(process.env.DATABASE_URL.replace(/^file:/,'')).prepare(\"DELETE FROM runs WHERE run_id LIKE 'seed-%'\").run()"
+```
+
+In the deployed image use `npm run seed:dist` instead — see
+[Seeding the deployed dashboard](#seeding-the-deployed-dashboard).
+
 ## Graceful shutdown
 
 `src/index.ts` handles `SIGTERM` and `SIGINT` by calling `app.close()`. Fastify's `onClose` hooks
@@ -367,10 +411,10 @@ Updating `render.yaml` on the connected branch triggers Render to sync the chang
 
 ### Seeding the deployed dashboard
 
-The image has no `tsx` and no dev dependencies, so `npm run seed` does not work in the container.
-The build compiles the seed to `dist-seed/` instead; run it from the service's **Shell** tab in the
-Render dashboard (available on paid instance types), where it writes to the disk-backed database
-`DATABASE_URL` already points at:
+The image has no `tsx` and no dev dependencies, so [`npm run seed`](#seeding-demo-data) does not
+work in the container. The build compiles the seed to `dist-seed/` instead; run it from the
+service's **Shell** tab in the Render dashboard (available on paid instance types), where it writes
+to the disk-backed database `DATABASE_URL` already points at:
 
 ```bash
 npm run seed:dist              # 7 days of fake runs

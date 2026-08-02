@@ -127,6 +127,29 @@ th {
   font-size: 0.85em;
 }
 
+.demo-badge {
+  color: var(--neutral);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7em;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+.demo-row {
+  background: #fbfcfd;
+}
+
+/* Seeded demo rows keep the link affordance (underline) but are inert and grey. */
+.demo-link {
+  color: var(--neutral);
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  cursor: default;
+}
+
 .empty {
   color: var(--neutral);
   font-size: 14px;

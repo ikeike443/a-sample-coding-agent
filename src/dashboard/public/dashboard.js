@@ -27,10 +27,34 @@ function renderCards(container, cards) {
   );
 }
 
+/**
+ * Link for real runs; for seeded demo rows an inert grey, underlined span so
+ * fake pull requests and sessions cannot be clicked.
+ */
+function renderLink(isDemo, href, text, rel) {
+  if (isDemo) {
+    const span = document.createElement("span");
+    span.className = "demo-link";
+    span.textContent = text;
+    span.title = "Seeded demo data — not a real link";
+    return span;
+  }
+
+  const link = document.createElement("a");
+  link.href = href;
+  link.textContent = text;
+  link.target = "_blank";
+  link.rel = rel;
+  return link;
+}
+
 function renderRuns(tbody, runs) {
   tbody.replaceChildren(
     ...runs.map((run) => {
       const row = document.createElement("tr");
+      if (run.isDemo) {
+        row.className = "demo-row";
+      }
 
       const cells = [
         run.issueLabel,
@@ -47,6 +71,14 @@ function renderRuns(tbody, runs) {
           td.textContent = text;
         }
         row.append(td);
+      }
+
+      if (run.isDemo) {
+        const badge = document.createElement("span");
+        badge.className = "status badge demo-badge";
+        badge.textContent = "Demo";
+        badge.title = "Seeded demo data (see the Demo section of the README)";
+        row.children[0].append(badge);
       }
 
       if (run.issueClosedAtLabel) {
@@ -66,12 +98,9 @@ function renderRuns(tbody, runs) {
 
       const prCell = row.children[4];
       if (run.prUrl) {
-        const link = document.createElement("a");
-        link.href = run.prUrl;
-        link.textContent = run.prUrl.replace("https://github.com/", "");
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        prCell.append(link);
+        prCell.append(
+          renderLink(run.isDemo, run.prUrl, run.prUrl.replace("https://github.com/", ""), "noreferrer"),
+        );
 
         if (run.prMerged) {
           const badge = document.createElement("span");
@@ -86,12 +115,9 @@ function renderRuns(tbody, runs) {
 
       const sessionCell = row.children[5];
       if (run.sessionUrl) {
-        const link = document.createElement("a");
-        link.href = run.sessionUrl;
-        link.textContent = "View Devin Session";
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        sessionCell.append(link);
+        sessionCell.append(
+          renderLink(run.isDemo, run.sessionUrl, "View Devin Session", "noopener noreferrer"),
+        );
       } else {
         sessionCell.textContent = "—";
       }

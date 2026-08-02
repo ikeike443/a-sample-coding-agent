@@ -259,6 +259,19 @@ describe("buildRecentRuns", () => {
     expect(withSession?.sessionUrl).toBe("https://app.devin.ai/sessions/devin-abc123");
     expect(withoutSession?.sessionUrl).toBeNull();
   });
+
+  it("flags seeded runs as demo data", () => {
+    const [seeded, real] = buildRecentRuns(
+      [
+        run({ runId: "seed-0-1", detectedAt: "2026-08-01T11:00:00.000Z" }),
+        run({ runId: "run-1", detectedAt: "2026-08-01T10:00:00.000Z" }),
+      ],
+      NOW,
+    );
+
+    expect(seeded?.isDemo).toBe(true);
+    expect(real?.isDemo).toBe(false);
+  });
 });
 
 describe("sessionUrl", () => {

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "../src/app.js";
 import type { DevinClient, SessionDetail } from "../src/devin-client/index.js";
-import { SqliteRunStore } from "../src/observability/index.js";
+import { PENDING_STALE_MS, SqliteRunStore } from "../src/observability/index.js";
 import { dispatchToDevin } from "../src/webhook/dispatch.js";
 import { normaliseEvent, type NormalisedEvent } from "../src/webhook/normalize.js";
 import { computeSignature } from "../src/webhook/signature.js";
@@ -130,14 +130,18 @@ describe("normaliseEvent trigger keys", () => {
   });
 });
 
+function guardDeps(client: ReturnType<typeof vi.fn>) {
+  return {
+    client: { createRemediationSession: client } as unknown as DevinClient,
+    maxAcuLimit: 5,
+  };
+}
+
 describe("dispatch guard on unfinished runs", () => {
   it("skips dispatch while an unfinished run exists for the issue", async () => {
     const guardStore = new SqliteRunStore({ filename: ":memory:" });
     const client = vi.fn(async () => ({ session_id: "devin-guard" }));
-    const deps = {
-      client: { createRemediationSession: client } as unknown as DevinClient,
-      maxAcuLimit: 5,
-    };
+    const deps = guardDeps(client);
 
     await dispatchToDevin(event(), fakeLogger(), deps, guardStore);
     await dispatchToDevin(event({ deliveryId: "delivery-y" }), fakeLogger(), deps, guardStore);
@@ -151,10 +155,7 @@ describe("dispatch guard on unfinished runs", () => {
   it("dispatches again once the previous run reached a terminal status", async () => {
     const guardStore = new SqliteRunStore({ filename: ":memory:" });
     const client = vi.fn(async () => ({ session_id: "devin-guard" }));
-    const deps = {
-      client: { createRemediationSession: client } as unknown as DevinClient,
-      maxAcuLimit: 5,
-    };
+    const deps = guardDeps(client);
 
     await dispatchToDevin(event(), fakeLogger(), deps, guardStore);
     const [run] = guardStore.listRuns();
@@ -163,6 +164,38 @@ describe("dispatch guard on unfinished runs", () => {
     await dispatchToDevin(event({ deliveryId: "delivery-z" }), fakeLogger(), deps, guardStore);
 
     expect(client).toHaveBeenCalledTimes(2);
+
+    guardStore.close();
+  });
+
+  it("does not let one repository's run block the same issue number elsewhere", async () => {
+    const guardStore = new SqliteRunStore({ filename: ":memory:" });
+    const client = vi.fn(async () => ({ session_id: "devin-guard" }));
+    const deps = guardDeps(client);
+
+    await dispatchToDevin(event({ repository: "orgA/repoA" }), fakeLogger(), deps, guardStore);
+    await dispatchToDevin(event({ repository: "orgB/repoB" }), fakeLogger(), deps, guardStore);
+
+    expect(client).toHaveBeenCalledTimes(2);
+
+    guardStore.close();
+  });
+
+  it("stops letting an orphaned pending run block the issue once it is stale", async () => {
+    let now = new Date("2026-08-01T12:00:00.000Z");
+    const guardStore = new SqliteRunStore({ filename: ":memory:", now: () => now });
+    const client = vi.fn(async () => ({ session_id: "devin-guard" }));
+    const deps = guardDeps(client);
+
+    // A run orphaned in `pending`: nothing will ever advance it.
+    guardStore.recordEvent({ issueRef: 900, repository: "ikeike443/superset", triggerType: "webhook" });
+
+    await dispatchToDevin(event(), fakeLogger(), deps, guardStore);
+    expect(client).not.toHaveBeenCalled();
+
+    now = new Date(now.getTime() + PENDING_STALE_MS + 1000);
+    await dispatchToDevin(event(), fakeLogger(), deps, guardStore);
+    expect(client).toHaveBeenCalledTimes(1);
 
     guardStore.close();
   });

@@ -169,6 +169,7 @@ function applyScenario(store: SqliteRunStore, run: GeneratedRun, setClock: (at: 
   store.recordEvent({
     runId: run.runId,
     issueRef: run.issueRef,
+    repository: "ikeike443/a-sample-coding-agent",
     triggerType: run.triggerType,
     detectedAt: detectedAt.toISOString(),
     tags: run.triggerType === "webhook" ? ["devin-remediate"] : ["scheduled"],

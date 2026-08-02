@@ -82,8 +82,8 @@ export async function dispatchToDevin(
 
   // Cross-process, restart-proof guard: a still-unfinished run for the same
   // issue means this trigger has already been acted upon.
-  if (event.issueNumber !== undefined) {
-    const existing = store?.findUnfinishedRunForIssue(event.issueNumber);
+  if (event.issueNumber !== undefined && event.repository !== undefined) {
+    const existing = store?.findUnfinishedRunForIssue(event.repository, event.issueNumber);
     if (existing) {
       logger.info(
         { ...context, runId: existing.runId, sessionId: existing.sessionId },
@@ -95,6 +95,7 @@ export async function dispatchToDevin(
 
   const run = store?.recordEvent({
     issueRef: event.issueNumber ?? null,
+    repository: event.repository ?? null,
     triggerType: "webhook",
     tags,
   });

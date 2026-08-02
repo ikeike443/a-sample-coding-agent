@@ -19,6 +19,9 @@ export type TriggerType = "webhook" | "schedule";
  * `needs_human_attention` is a session that has been `blocked` past the grace
  * period without ever reporting a structured output, i.e. one that is most
  * likely waiting on a human rather than still working.
+ *
+ * `pr_rejected` is a run whose pull request was closed without being merged:
+ * the run produced something, but it was thrown away, so it is not a success.
  */
 export type RunStatus =
   | "pending"
@@ -27,6 +30,7 @@ export type RunStatus =
   | "blocked"
   | "needs_human_attention"
   | "finished"
+  | "pr_rejected"
   | "failed";
 
 export interface RunRecord {
@@ -44,6 +48,8 @@ export interface RunRecord {
   prUrl: string | null;
   prUrlRecordedAt: string | null;
   prMergedAt: string | null;
+  /** When the run's pull request was observed closed without being merged. */
+  prClosedAt: string | null;
   acuCost: number | null;
   errorMessage: string | null;
   /** Outcome reported by the session's structured output, if any. */
@@ -70,6 +76,8 @@ export interface SessionUpdate {
   prUrl?: string | null;
   /** The Devin API reports the run's pull request as merged. */
   prMerged?: boolean;
+  /** The run's pull request was closed without being merged. */
+  prClosed?: boolean;
   acuCost?: number | null;
   errorMessage?: string | null;
   sessionFinishedAt?: string | null;
@@ -82,6 +90,7 @@ export interface RunStore {
   markWorking(runId: string, sessionId: string): RunRecord | undefined;
   applySessionUpdate(runId: string, update: SessionUpdate): RunRecord | undefined;
   markIssueClosed(issueRef: number): RunRecord[];
+  markPullRequestClosed(prUrl: string, merged: boolean): RunRecord[];
   findUnfinishedRunForIssue(repository: string, issueRef: number): RunRecord | undefined;
   getRun(runId: string): RunRecord | undefined;
   listRuns(): RunRecord[];
@@ -103,6 +112,7 @@ interface RunRow {
   pr_url: string | null;
   pr_url_recorded_at: string | null;
   pr_merged_at: string | null;
+  pr_closed_at: string | null;
   acu_cost: number | null;
   error_message: string | null;
   outcome: string | null;
@@ -126,6 +136,7 @@ CREATE TABLE IF NOT EXISTS runs (
   pr_url             TEXT,
   pr_url_recorded_at TEXT,
   pr_merged_at       TEXT,
+  pr_closed_at       TEXT,
   acu_cost           REAL,
   error_message      TEXT,
   outcome            TEXT,
@@ -143,6 +154,23 @@ CREATE INDEX IF NOT EXISTS runs_detected_at_idx ON runs (detected_at);
  * it then has to be able to reach a terminal status.
  */
 export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_attention"];
+
+/** Statuses in which a run has stopped progressing on its own. */
+export const TERMINAL_STATUSES: RunStatus[] = [
+  "dispatch_failed",
+  "finished",
+  "pr_rejected",
+  "failed",
+];
+
+/**
+ * How long after a run reached a terminal status the poller keeps watching its
+ * session. A finished session is not frozen: a human can reply to it and it
+ * picks the work back up, and without this window the run would keep claiming
+ * to be finished forever. Older terminal runs are left alone so polling stays
+ * bounded.
+ */
+export const RESUME_WATCH_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Statuses in which a run for an issue is still outstanding, so a new trigger
@@ -183,6 +211,7 @@ function toRecord(row: RunRow): RunRecord {
     prUrl: row.pr_url,
     prUrlRecordedAt: row.pr_url_recorded_at,
     prMergedAt: row.pr_merged_at,
+    prClosedAt: row.pr_closed_at,
     acuCost: row.acu_cost,
     errorMessage: row.error_message,
     outcome: isRemediationOutcome(row.outcome) ? row.outcome : null,
@@ -240,6 +269,7 @@ export class SqliteRunStore implements RunStore {
       "blocked_since",
       "issue_closed_at",
       "pr_merged_at",
+      "pr_closed_at",
     ]) {
       if (!columns.has(column)) {
         this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} TEXT`);
@@ -266,6 +296,7 @@ export class SqliteRunStore implements RunStore {
       prUrl: null,
       prUrlRecordedAt: null,
       prMergedAt: null,
+      prClosedAt: null,
       acuCost: null,
       errorMessage: null,
       outcome: null,
@@ -325,8 +356,11 @@ export class SqliteRunStore implements RunStore {
 
     const prUrl = update.prUrl ?? current.prUrl;
     const outcome = update.outcome ?? current.outcome;
-    const isTerminal = update.status === "finished" || update.status === "failed";
+    const isTerminal = TERMINAL_STATUSES.includes(update.status);
     const isBlocked = BLOCKED_STATUSES.includes(update.status);
+    // The session picked its work back up after the run had been closed out, so
+    // the finish timestamp and the outcome clock no longer describe it.
+    const resumed = !isTerminal && TERMINAL_STATUSES.includes(current.status);
 
     this.db
       .prepare(
@@ -335,6 +369,7 @@ export class SqliteRunStore implements RunStore {
              pr_url = @prUrl,
              pr_url_recorded_at = @prUrlRecordedAt,
              pr_merged_at = @prMergedAt,
+             pr_closed_at = @prClosedAt,
              acu_cost = @acuCost,
              error_message = @errorMessage,
              session_finished_at = @sessionFinishedAt,
@@ -353,7 +388,7 @@ export class SqliteRunStore implements RunStore {
         outcomeReportedAt:
           outcome === null
             ? null
-            : outcome === current.outcome
+            : outcome === current.outcome && !resumed
               ? (current.outcomeReportedAt ?? this.timestamp())
               : this.timestamp(),
         // The blocked clock starts at the first blocked poll and survives
@@ -363,12 +398,14 @@ export class SqliteRunStore implements RunStore {
           current.prUrlRecordedAt ?? (prUrl !== null && prUrl !== undefined ? this.timestamp() : null),
         // First observation wins: the merge happened before this poll saw it.
         prMergedAt: current.prMergedAt ?? (update.prMerged === true ? this.timestamp() : null),
+        prClosedAt: current.prClosedAt ?? (update.prClosed === true ? this.timestamp() : null),
         acuCost: update.acuCost ?? current.acuCost,
         errorMessage: update.errorMessage ?? current.errorMessage,
-        sessionFinishedAt:
-          update.sessionFinishedAt ??
-          current.sessionFinishedAt ??
-          (isTerminal ? this.timestamp() : null),
+        sessionFinishedAt: resumed
+          ? null
+          : (update.sessionFinishedAt ??
+            current.sessionFinishedAt ??
+            (isTerminal ? this.timestamp() : null)),
       });
 
     return this.getRun(runId);
@@ -409,6 +446,41 @@ export class SqliteRunStore implements RunStore {
         ...ACTIVE_STATUSES,
         issueRef,
       );
+
+    return runIds
+      .map((runId) => this.getRun(runId))
+      .filter((run): run is RunRecord => run !== undefined);
+  }
+
+  /**
+   * Records the closure of a pull request GitHub reports as closed.
+   *
+   * A merged pull request completes its run; one closed without being merged
+   * had its work thrown away, so the run becomes `pr_rejected` rather than a
+   * success. Runs that already ended in an error keep their status — the
+   * closure is only recorded in `pr_closed_at`.
+   */
+  markPullRequestClosed(prUrl: string, merged: boolean): RunRecord[] {
+    const closedAt = this.timestamp();
+    const runIds = (
+      this.db
+        .prepare(`SELECT run_id FROM runs WHERE pr_url = ?`)
+        .all(prUrl) as { run_id: string }[]
+    ).map((row) => row.run_id);
+
+    const status: RunStatus = merged ? "finished" : "pr_rejected";
+
+    this.db
+      .prepare(
+        `UPDATE runs
+         SET pr_merged_at = CASE WHEN @merged = 1 THEN COALESCE(pr_merged_at, @closedAt) ELSE pr_merged_at END,
+             pr_closed_at = CASE WHEN @merged = 1 THEN pr_closed_at ELSE COALESCE(pr_closed_at, @closedAt) END,
+             status = CASE WHEN status IN ('dispatch_failed', 'failed') THEN status ELSE @status END,
+             session_finished_at = COALESCE(session_finished_at, @closedAt),
+             blocked_since = NULL
+         WHERE pr_url = @prUrl`,
+      )
+      .run({ prUrl, merged: merged ? 1 : 0, closedAt, status });
 
     return runIds
       .map((runId) => this.getRun(runId))
@@ -458,15 +530,23 @@ export class SqliteRunStore implements RunStore {
     return rows.map(toRecord);
   }
 
+  /**
+   * Runs the poller refreshes: the active ones, plus recently terminated ones,
+   * whose session can still be resumed by a human replying to it.
+   */
   listActiveRuns(): RunRecord[] {
-    const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
+    const active = ACTIVE_STATUSES.map(() => "?").join(", ");
+    const terminal = TERMINAL_STATUSES.map(() => "?").join(", ");
+    const resumeCutoff = new Date(this.now().getTime() - RESUME_WATCH_MS).toISOString();
     const rows = this.db
       .prepare(
         `SELECT * FROM runs
-         WHERE status IN (${placeholders}) AND session_id IS NOT NULL
+         WHERE session_id IS NOT NULL
+           AND (status IN (${active})
+                OR (status IN (${terminal}) AND session_finished_at > ?))
          ORDER BY detected_at ASC`,
       )
-      .all(...ACTIVE_STATUSES) as RunRow[];
+      .all(...ACTIVE_STATUSES, ...TERMINAL_STATUSES, resumeCutoff) as RunRow[];
     return rows.map(toRecord);
   }
 

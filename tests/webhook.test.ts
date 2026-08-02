@@ -123,6 +123,30 @@ describe("POST /webhook/github event normalisation", () => {
     expect(response.json()).toMatchObject({ status: "issue_closed", issueNumber: 42 });
   });
 
+  it("settles the runs behind a pull request GitHub reports as closed", async () => {
+    const payload = (merged: boolean) => ({
+      action: "closed",
+      repository: { full_name: "ikeike443/a-sample-coding-agent" },
+      pull_request: {
+        number: 9,
+        merged,
+        html_url: "https://github.com/ikeike443/a-sample-coding-agent/pull/9",
+        labels: [],
+      },
+    });
+
+    const rejected = await post({ event: "pull_request", payload: payload(false) });
+    const merged = await post({ event: "pull_request", payload: payload(true) });
+
+    // Which runs are affected depends on the shared store's history; the
+    // settlement itself is covered by tests/observability-store.test.ts.
+    expect(rejected.json()).toMatchObject({
+      status: "pull_request_rejected",
+      prUrl: "https://github.com/ikeike443/a-sample-coding-agent/pull/9",
+    });
+    expect(merged.json()).toMatchObject({ status: "pull_request_merged" });
+  });
+
   it("acknowledges supported but not-yet-actionable events", async () => {
     const response = await post({
       event: "issue_comment",

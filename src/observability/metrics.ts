@@ -36,6 +36,8 @@ export interface OutcomeBreakdown {
   issueClosed: number;
   /** Stopped waiting for a human decision. */
   needsHumanAttention: number;
+  /** Ended with the pull request closed without being merged. */
+  prRejected: number;
 }
 
 export interface OrchestratorMetrics {
@@ -60,6 +62,7 @@ const STATUSES: RunStatus[] = [
   "blocked",
   "needs_human_attention",
   "finished",
+  "pr_rejected",
   "failed",
 ];
 
@@ -94,6 +97,14 @@ export function isRemediated(run: RunRecord): boolean {
 /** Finished after Devin concluded that no change was required. */
 export function isNoActionNeeded(run: RunRecord): boolean {
   return run.status === "finished" && run.outcome === "no_action_needed";
+}
+
+/**
+ * Ended with its pull request closed without being merged. The run did work,
+ * but the work was rejected, so it is not counted as a success.
+ */
+export function isPrRejectedRun(run: RunRecord): boolean {
+  return run.status === "pr_rejected";
 }
 
 /** Waiting on a human rather than progressing. */
@@ -186,6 +197,7 @@ export function computeMetrics(runs: RunRecord[], now: Date = new Date()): Orche
       noActionNeeded,
       issueClosed,
       needsHumanAttention: statusCounts.needs_human_attention,
+      prRejected: statusCounts.pr_rejected,
     },
     failureBreakdown: {
       dispatchFailed: statusCounts.dispatch_failed,

@@ -84,6 +84,7 @@ describe("computeMetrics", () => {
       noActionNeeded: 1,
       issueClosed: 0,
       needsHumanAttention: 1,
+      prRejected: 0,
     });
     // (remediated + noActionNeeded) / totalRuns — the old definition scored 0.25.
     expect(metrics.successfulRuns).toBe(2);

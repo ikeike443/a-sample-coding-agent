@@ -51,6 +51,35 @@ db.prepare(\"INSERT OR REPLACE INTO runs (run_id,issue_ref,trigger_type,session_
   evidence instead.
 - Handy sanity check of the server-side view model without the browser:
   `curl -s localhost:3000/dashboard/metrics | python3 -c "import sys,json;[print(r['runId'],r['issueLabel'],r['isDemo']) for r in json.load(sys.stdin)['view']['recentRuns']]"`
+- **"Recent runs" is capped at 20 rows** (`RECENT_RUNS_LIMIT` in `src/dashboard/view-model.ts`), sorted by
+  `detected_at` desc. Seeded runs are backdated over ~7 days, so a rare seeded scenario (e.g. the single
+  `pr_rejected` run) is often counted in the summary cards yet **not rendered in the table at all**. Do not
+  conclude the row rendering is broken — check the DB
+  (`node -e "...SELECT run_id,status,detected_at FROM runs WHERE status='<status>'..."`) and prove row/badge
+  rendering with a freshly created run instead, which sorts to the top.
+- Summary-card arithmetic is the cheapest way to prove a status is excluded from success: read the Success
+  rate card's detail line ("N of M run(s) resolved (…)") before and after the state change. A status that is
+  correctly excluded raises M without raising N, so the percentage drops.
+
+## End-to-end: webhook → poller → dashboard row, with no Devin credentials
+
+The most convincing dashboard test drives a *real* run through the whole pipeline instead of inserting rows.
+Point the orchestrator at a local fake Devin API (see the `testing-webhook` skill) whose session state lives in
+a JSON file you can edit live, then:
+
+```bash
+# 1. boot with a short poll interval so state changes land in seconds
+GITHUB_WEBHOOK_SECRET=test-secret DATABASE_URL=file:./data/demo.sqlite POLL_INTERVAL_MS=3000 \
+  BLOCKED_GRACE_MS=1000 DEVIN_API_KEY=fake-key DEVIN_ORG_ID=org-test \
+  DEVIN_API_BASE_URL=http://localhost:4010/v3 setsid nohup npm run dev > /tmp/server.log 2>&1 < /dev/null &
+# 2. signed issues.labeled delivery -> {"status":"accepted"} and a session id from the fake API
+# 3. edit the fake session: acus_consumed, structured_output.outcome, pull_requests[0].pr_url/pr_state
+#    -> within ~2 poll intervals the row shows the PR link and settles (BLOCKED_GRACE_MS=1000 keeps it quick)
+# 4. send further signed deliveries (e.g. pull_request.closed) and watch the row change without reloading
+```
+
+`BLOCKED_GRACE_MS` is what makes step 3 fast: with the default grace the poller refuses to settle a reported
+outcome for minutes, which looks like a broken feature if you only wait a few seconds.
 
 ## Devin Secrets Needed
 

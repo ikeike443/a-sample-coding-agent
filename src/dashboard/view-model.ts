@@ -28,6 +28,8 @@ export interface RunRow {
   /** When the run's GitHub issue was observed closed, if it was. */
   issueClosedAtLabel: string | null;
   sessionUrl: string | null;
+  /** Row produced by `scripts/seed.ts`; rendered as inert dummy data. */
+  isDemo: boolean;
   elapsedLabel: string;
 }
 
@@ -116,6 +118,14 @@ function formatTimestamp(value: string): string {
 }
 
 const DEVIN_SESSION_BASE_URL = "https://app.devin.ai/sessions";
+
+/** Run id prefix used by `scripts/seed.ts` for fake demo runs. */
+export const SEED_RUN_PREFIX = "seed-";
+
+/** Whether a run is seeded demo data rather than a real remediation run. */
+export function isDemoRun(runId: string): boolean {
+  return runId.startsWith(SEED_RUN_PREFIX);
+}
 
 /** Devin session page for a run, or `null` when the dispatch never produced one. */
 export function sessionUrl(sessionId: string | null): string | null {
@@ -261,6 +271,7 @@ export function buildRecentRuns(
       prMergedAtLabel: run.prMergedAt === null ? null : formatTimestamp(run.prMergedAt),
       issueClosedAtLabel: run.issueClosedAt === null ? null : formatTimestamp(run.issueClosedAt),
       sessionUrl: sessionUrl(run.sessionId),
+      isDemo: isDemoRun(run.runId),
       elapsedLabel: elapsed(run, now),
     }));
 }

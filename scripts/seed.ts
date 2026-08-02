@@ -21,12 +21,13 @@
 import Database from "better-sqlite3";
 
 import { databasePathFromUrl, DEFAULT_DATABASE_URL } from "../src/config.js";
+import { SEED_RUN_PREFIX } from "../src/dashboard/view-model.js";
 import { SqliteRunStore, type TriggerType } from "../src/observability/index.js";
 import type { RemediationOutcome } from "../src/devin-client/remediation.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
-const SEED_RUN_PREFIX = "seed-";
+
 
 /**
  * Issue numbers for seeded runs start well above any real GitHub issue number so

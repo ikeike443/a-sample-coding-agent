@@ -46,6 +46,8 @@ export interface SessionUpdateContext {
   previousStatus?: RunStatus;
   previousOutcome?: RemediationOutcome | null;
   previousAcuCost?: number | null;
+  /** GitHub already settled the run's issue or pull request for good. */
+  subjectSettled?: boolean;
 }
 
 /** Maps the Devin session status onto the orchestrator run status. */
@@ -206,6 +208,10 @@ function resolveReportedOutcomeStatus(
  * flip the run between `working` and its terminal status forever. Renewed work
  * is required — burnt ACUs or a changed outcome — so the run only reopens when
  * the session actually did something after being closed out.
+ *
+ * A run whose issue or pull request GitHub already settled never reopens: the
+ * store closed it out while its session kept running, so that session being
+ * busy says nothing about the run.
  */
 function hasResumed(
   detail: SessionDetail,
@@ -215,6 +221,7 @@ function hasResumed(
   if (
     context.previousStatus === undefined ||
     !TERMINAL_STATUSES.includes(context.previousStatus) ||
+    context.subjectSettled === true ||
     !sessionIsLive(detail.status)
   ) {
     return false;
@@ -385,6 +392,8 @@ export class SessionPoller {
       previousStatus: run.status,
       previousOutcome: run.outcome,
       previousAcuCost: run.acuCost,
+      subjectSettled:
+        run.issueClosedAt !== null || run.prClosedAt !== null || run.prMergedAt !== null,
       blockedGraceMs: this.blockedGraceMs,
       now: this.now(),
     });

@@ -533,6 +533,10 @@ export class SqliteRunStore implements RunStore {
   /**
    * Runs the poller refreshes: the active ones, plus recently terminated ones,
    * whose session can still be resumed by a human replying to it.
+   *
+   * A run whose issue or pull request GitHub already settled is left out of the
+   * resume window: its subject is closed for good, so whatever its session
+   * still does cannot reopen the run.
    */
   listActiveRuns(): RunRecord[] {
     const active = ACTIVE_STATUSES.map(() => "?").join(", ");
@@ -543,7 +547,11 @@ export class SqliteRunStore implements RunStore {
         `SELECT * FROM runs
          WHERE session_id IS NOT NULL
            AND (status IN (${active})
-                OR (status IN (${terminal}) AND session_finished_at > ?))
+                OR (status IN (${terminal})
+                    AND session_finished_at > ?
+                    AND issue_closed_at IS NULL
+                    AND pr_closed_at IS NULL
+                    AND pr_merged_at IS NULL))
          ORDER BY detected_at ASC`,
       )
       .all(...ACTIVE_STATUSES, ...TERMINAL_STATUSES, resumeCutoff) as RunRow[];

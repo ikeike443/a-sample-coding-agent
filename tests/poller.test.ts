@@ -328,6 +328,34 @@ describe("SessionPoller", () => {
     });
   });
 
+  it("never reopens a run whose issue or pull request GitHub already settled", async () => {
+    const runs = store();
+    const closedIssue = runs.recordEvent({ triggerType: "webhook", issueRef: 42 });
+    runs.markWorking(closedIssue.runId, "devin-1");
+    // The store closes the run out while its session keeps running.
+    runs.markIssueClosed(42);
+
+    const getSession = vi.fn(async () =>
+      detail({
+        status: "running",
+        acus_consumed: 9,
+        structured_output: { outcome: "pr_created", summary: "still going" },
+      }),
+    );
+    await new SessionPoller({
+      store: runs,
+      client: fakeClient(getSession),
+      logger: fakeLogger(),
+    }).pollOnce();
+
+    // Left out of the resume window entirely, so it is not even polled.
+    expect(getSession).not.toHaveBeenCalled();
+    expect(runs.getRun(closedIssue.runId)).toMatchObject({
+      status: "finished",
+      issueClosedAt: expect.any(String) as unknown as string,
+    });
+  });
+
   it("keeps the first pr_merged_at across later polls", async () => {
     const clock = vi.fn(() => new Date("2026-01-01T00:00:00.000Z"));
     const runs = new SqliteRunStore({ filename: ":memory:", now: clock });

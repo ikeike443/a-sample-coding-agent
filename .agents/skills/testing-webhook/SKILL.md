@@ -123,6 +123,17 @@ console.log(db.prepare("select run_id,issue_ref,status,session_id,pr_url,acu_cos
 - Every actionable delivery writes a `pending` row, then `working` (+`session_id`) or `dispatch_failed`
   (`session_id` NULL, `error_message` set) — including when `DEVIN_API_KEY`/`DEVIN_ORG_ID` are unset. Row count is the
   best oracle for "no run was created": bad signature -> 401 and no row; duplicate delivery id -> 200 `duplicate` and no row.
+- **Resume / reopen behaviour of terminal runs** (`RESUME_WATCH_MS`, `hasResumed()` in `src/observability/poller.ts`):
+  a settled run is only reopened to `working` when the session did *new* work — `acus_consumed` grew or the
+  structured-output outcome changed — and never when GitHub already settled its subject
+  (`issue_closed_at` / `pr_closed_at` / `pr_merged_at`). To test it, keep the fake session's `status: "running"` and
+  edit only `acus_consumed` between polls. Three cases worth separating, because a broken build looks identical if you
+  only run the first: (1) session running, ACUs unchanged -> stays terminal; (2) ACUs grow -> flips to `working` and the
+  Elapsed column unfreezes; (3) run settled via `issues.closed` / `pull_request.closed`, ACUs then grow -> must stay
+  settled. For case 3, prove the ACUs really grew (bump twice over several poll intervals) — the settled sessions drop
+  out of `listActiveRuns()`, so the fake API log should show **zero** further `GET /sessions/<id>` for them while an
+  unsettled run keeps being polled. Set `BLOCKED_GRACE_MS` to ~20000 for these tests: the default grace is minutes
+  (too slow), and ~1 s makes the reopened `working` state flash past before the 5 s dashboard refresh shows it.
 - The poller only starts when Devin credentials are configured (`src/index.ts`), so status transitions can only be
   tested against the fake API. Have the stub's `GET /organizations/{org}/sessions/{id}` return `status:"exit"` plus
   `pull_requests[0].pr_url` and `acus_consumed`; with `POLL_INTERVAL_MS=2000` the row flips to `finished` within ~2 s and

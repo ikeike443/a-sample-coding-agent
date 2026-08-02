@@ -5,7 +5,10 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
 } from "./devin-client/index.js";
 import { DEFAULT_BLOCKED_GRACE_MS, DEFAULT_POLL_INTERVAL_MS } from "./observability/index.js";
-import { DEFAULT_DEDUPE_TTL_MS } from "./webhook/dedupe.js";
+import {
+  DEFAULT_DEDUPE_TTL_MS,
+  DEFAULT_TRIGGER_IDEMPOTENCY_TTL_MS,
+} from "./webhook/dedupe.js";
 
 export interface AppConfig {
   port: number;
@@ -13,6 +16,7 @@ export interface AppConfig {
   logLevel: string;
   githubWebhookSecret: string;
   webhookDedupeTtlMs: number;
+  webhookTriggerIdempotencyTtlMs: number;
   bodyLimitBytes: number;
   devinApiKey: string;
   devinOrgId: string;
@@ -109,6 +113,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel: env.LOG_LEVEL ?? "info",
     githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
     webhookDedupeTtlMs: positiveNumber(env.WEBHOOK_DEDUPE_TTL_MS, DEFAULT_DEDUPE_TTL_MS),
+    webhookTriggerIdempotencyTtlMs: positiveNumber(
+      env.WEBHOOK_TRIGGER_IDEMPOTENCY_TTL_MS,
+      DEFAULT_TRIGGER_IDEMPOTENCY_TTL_MS,
+    ),
     bodyLimitBytes: positiveNumber(env.BODY_LIMIT_BYTES, DEFAULT_BODY_LIMIT_BYTES),
     devinApiKey: env.DEVIN_API_KEY ?? "",
     devinOrgId: env.DEVIN_ORG_ID ?? "",

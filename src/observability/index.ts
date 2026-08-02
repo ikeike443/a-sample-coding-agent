@@ -8,6 +8,8 @@
  */
 export {
   ACTIVE_STATUSES,
+  UNFINISHED_STATUSES,
+  PENDING_STALE_MS,
   SqliteRunStore,
   type RecordEventInput,
   type RunRecord,

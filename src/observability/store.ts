@@ -32,6 +32,8 @@ export type RunStatus =
 export interface RunRecord {
   runId: string;
   issueRef: number | null;
+  /** `owner/name` of the repository the issue belongs to, when known. */
+  repository: string | null;
   triggerType: TriggerType;
   sessionId: string | null;
   tags: string[];
@@ -56,6 +58,7 @@ export interface RunRecord {
 
 export interface RecordEventInput {
   issueRef?: number | null;
+  repository?: string | null;
   triggerType: TriggerType;
   tags?: string[];
   runId?: string;
@@ -79,6 +82,7 @@ export interface RunStore {
   markWorking(runId: string, sessionId: string): RunRecord | undefined;
   applySessionUpdate(runId: string, update: SessionUpdate): RunRecord | undefined;
   markIssueClosed(issueRef: number): RunRecord[];
+  findUnfinishedRunForIssue(repository: string, issueRef: number): RunRecord | undefined;
   getRun(runId: string): RunRecord | undefined;
   listRuns(): RunRecord[];
   listActiveRuns(): RunRecord[];
@@ -88,6 +92,7 @@ export interface RunStore {
 interface RunRow {
   run_id: string;
   issue_ref: number | null;
+  repository: string | null;
   trigger_type: string;
   session_id: string | null;
   tags: string;
@@ -110,6 +115,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS runs (
   run_id             TEXT PRIMARY KEY,
   issue_ref          INTEGER,
+  repository         TEXT,
   trigger_type       TEXT NOT NULL,
   session_id         TEXT,
   tags               TEXT NOT NULL DEFAULT '[]',
@@ -138,6 +144,26 @@ CREATE INDEX IF NOT EXISTS runs_detected_at_idx ON runs (detected_at);
  */
 export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_attention"];
 
+/**
+ * Statuses in which a run for an issue is still outstanding, so a new trigger
+ * for the same issue would duplicate it. `pending` is included: the run exists
+ * but its session creation is still in flight.
+ */
+export const UNFINISHED_STATUSES: RunStatus[] = [
+  "pending",
+  "working",
+  "blocked",
+  "needs_human_attention",
+];
+
+/**
+ * How long a `pending` run keeps blocking new triggers for its issue. A run
+ * that never reached `working` or `dispatch_failed` was orphaned mid-dispatch
+ * (process killed, store write failure) and nothing will ever advance it, so
+ * after this window the issue must be triggerable again.
+ */
+export const PENDING_STALE_MS = 15 * 60 * 1000;
+
 /** Statuses in which a run counts as waiting rather than progressing. */
 const BLOCKED_STATUSES: RunStatus[] = ["blocked", "needs_human_attention"];
 
@@ -146,6 +172,7 @@ function toRecord(row: RunRow): RunRecord {
   return {
     runId: row.run_id,
     issueRef: row.issue_ref,
+    repository: row.repository,
     triggerType: row.trigger_type as TriggerType,
     sessionId: row.session_id,
     tags: parseTags(row.tags),
@@ -207,6 +234,7 @@ export class SqliteRunStore implements RunStore {
     );
 
     for (const column of [
+      "repository",
       "outcome",
       "outcome_reported_at",
       "blocked_since",
@@ -227,6 +255,7 @@ export class SqliteRunStore implements RunStore {
     const record: RunRecord = {
       runId: input.runId ?? randomUUID(),
       issueRef: input.issueRef ?? null,
+      repository: input.repository ?? null,
       triggerType: input.triggerType,
       sessionId: null,
       tags: input.tags ?? [],
@@ -247,12 +276,13 @@ export class SqliteRunStore implements RunStore {
 
     this.db
       .prepare(
-        `INSERT INTO runs (run_id, issue_ref, trigger_type, tags, detected_at, status)
-         VALUES (@runId, @issueRef, @triggerType, @tags, @detectedAt, @status)`,
+        `INSERT INTO runs (run_id, issue_ref, repository, trigger_type, tags, detected_at, status)
+         VALUES (@runId, @issueRef, @repository, @triggerType, @tags, @detectedAt, @status)`,
       )
       .run({
         runId: record.runId,
         issueRef: record.issueRef,
+        repository: record.repository,
         triggerType: record.triggerType,
         tags: JSON.stringify(record.tags),
         detectedAt: record.detectedAt,
@@ -383,6 +413,33 @@ export class SqliteRunStore implements RunStore {
     return runIds
       .map((runId) => this.getRun(runId))
       .filter((run): run is RunRecord => run !== undefined);
+  }
+
+  /**
+   * Most recent run for `repository#issueRef` that has not reached a terminal
+   * status. Survives process restarts and is shared by every instance pointing
+   * at the same database, which the in-memory dedupe caches cannot do.
+   *
+   * Scoped by repository: two repositories both having an issue #6 are two
+   * different issues. Runs recorded before the `repository` column existed
+   * match nothing, so they never block a new trigger.
+   *
+   * Orphaned `pending` runs stop matching after `PENDING_STALE_MS`.
+   */
+  findUnfinishedRunForIssue(repository: string, issueRef: number): RunRecord | undefined {
+    const active = ACTIVE_STATUSES.map(() => "?").join(", ");
+    const pendingCutoff = new Date(this.now().getTime() - PENDING_STALE_MS).toISOString();
+    const row = this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE issue_ref = ? AND repository = ? AND issue_closed_at IS NULL
+           AND (status IN (${active}) OR (status = 'pending' AND detected_at > ?))
+         ORDER BY detected_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(issueRef, repository, ...ACTIVE_STATUSES, pendingCutoff) as RunRow | undefined;
+
+    return row ? toRecord(row) : undefined;
   }
 
   getRun(runId: string): RunRecord | undefined {

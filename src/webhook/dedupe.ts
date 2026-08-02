@@ -2,6 +2,14 @@ export const DEFAULT_DEDUPE_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_DEDUPE_MAX_ENTRIES = 10_000;
 
 /**
+ * Window in which a repeated *logical* trigger (same repository, issue, action
+ * and label) is treated as a duplicate, whatever its delivery id. Long enough
+ * to absorb GitHub redeliveries and retries, short enough that deliberately
+ * re-labelling an issue later still starts a new run.
+ */
+export const DEFAULT_TRIGGER_IDEMPOTENCY_TTL_MS = 30 * 60 * 1000;
+
+/**
  * In-memory TTL cache used to drop GitHub deliveries that are sent more than
  * once. Persisting delivery ids is left to the observability store.
  */

@@ -244,15 +244,19 @@ describe("POST /webhook/github -> devin client", () => {
     });
   }
 
-  const actionablePayload = {
-    action: "labeled",
-    label: { name: "devin-remediate" },
-    repository: { full_name: "ikeike443/a-sample-coding-agent" },
-    issue: { number: 42, labels: [{ name: "devin-remediate" }] },
-  };
+  // A distinct issue per test: the intake is idempotent per (repository, issue,
+  // label), so reusing one issue would make the second delivery a duplicate.
+  function actionablePayload(issueNumber: number) {
+    return {
+      action: "labeled",
+      label: { name: "devin-remediate" },
+      repository: { full_name: "ikeike443/a-sample-coding-agent" },
+      issue: { number: issueNumber, labels: [{ name: "devin-remediate" }] },
+    };
+  }
 
   it("creates a Devin session for an actionable delivery", async () => {
-    const response = await post(actionablePayload, "webhook-dispatch-1");
+    const response = await post(actionablePayload(42), "webhook-dispatch-1");
     expect(response.statusCode).toBe(200);
 
     await called;
@@ -271,7 +275,7 @@ describe("POST /webhook/github -> devin client", () => {
   it("still answers 200 when the Devin API call fails", async () => {
     createSession.mockRejectedValueOnce(new DevinApiError(500, "boom", "POST", "/sessions"));
 
-    const response = await post(actionablePayload, "webhook-dispatch-2");
+    const response = await post(actionablePayload(43), "webhook-dispatch-2");
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ status: "accepted" });

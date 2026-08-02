@@ -79,8 +79,23 @@ export async function dispatchToDevin(
     issueNumber: event.issueNumber,
   };
   const tags = buildTags(event);
+
+  // Cross-process, restart-proof guard: a still-unfinished run for the same
+  // issue means this trigger has already been acted upon.
+  if (event.issueNumber !== undefined && event.repository !== undefined) {
+    const existing = store?.findUnfinishedRunForIssue(event.repository, event.issueNumber);
+    if (existing) {
+      logger.info(
+        { ...context, runId: existing.runId, sessionId: existing.sessionId },
+        "issue already has an unfinished run; skipping duplicate dispatch",
+      );
+      return;
+    }
+  }
+
   const run = store?.recordEvent({
     issueRef: event.issueNumber ?? null,
+    repository: event.repository ?? null,
     triggerType: "webhook",
     tags,
   });

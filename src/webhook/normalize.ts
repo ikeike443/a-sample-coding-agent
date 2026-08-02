@@ -11,6 +11,11 @@ export interface NormalisedEvent {
   repository?: string;
   issueNumber?: number;
   labels: string[];
+  /**
+   * Logical identity of the trigger — `repository#issue:action:label` — used to
+   * drop repeat deliveries that carry a different `X-GitHub-Delivery` id.
+   */
+  triggerKey?: string;
   actionable: boolean;
   /** The delivery reports the issue as closed, so its runs can be closed out. */
   issueClosed: boolean;
@@ -43,6 +48,13 @@ function labelNames(labels: unknown): string[] {
       typeof label === "string" ? label : asString((label as { name?: unknown })?.name),
     )
     .filter((name): name is string => name !== undefined);
+}
+
+/** `repository#issue:action:label`; stable across deliveries of the same trigger. */
+function triggerKey(event: NormalisedEvent): string {
+  const repository = event.repository ?? "unknown";
+  const issue = event.issueNumber ?? "unknown";
+  return `${repository}#${issue}:${event.action ?? "unknown"}:${REMEDIATE_LABEL}`;
 }
 
 export function isSupportedEvent(event: string): event is SupportedEvent {
@@ -96,12 +108,15 @@ export function normaliseEvent(
   }
 
   const addedLabel = asString(body.label?.name);
+  // Only the label this delivery added counts. Falling back to the issue's full
+  // label set would make *every* later `labeled` delivery on an issue that
+  // already carries `devin-remediate` actionable, which starts a second run.
   const hasRemediateLabel =
-    addedLabel === REMEDIATE_LABEL || labels.includes(REMEDIATE_LABEL);
+    addedLabel === undefined ? labels.includes(REMEDIATE_LABEL) : addedLabel === REMEDIATE_LABEL;
 
   if (!hasRemediateLabel) {
     return { ...base, reason: "label_not_matched" };
   }
 
-  return { ...base, actionable: true, reason: "actionable" };
+  return { ...base, actionable: true, reason: "actionable", triggerKey: triggerKey(base) };
 }

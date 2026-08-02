@@ -79,6 +79,7 @@ export interface RunStore {
   markWorking(runId: string, sessionId: string): RunRecord | undefined;
   applySessionUpdate(runId: string, update: SessionUpdate): RunRecord | undefined;
   markIssueClosed(issueRef: number): RunRecord[];
+  findUnfinishedRunForIssue(issueRef: number): RunRecord | undefined;
   getRun(runId: string): RunRecord | undefined;
   listRuns(): RunRecord[];
   listActiveRuns(): RunRecord[];
@@ -137,6 +138,18 @@ CREATE INDEX IF NOT EXISTS runs_detected_at_idx ON runs (detected_at);
  * it then has to be able to reach a terminal status.
  */
 export const ACTIVE_STATUSES: RunStatus[] = ["working", "blocked", "needs_human_attention"];
+
+/**
+ * Statuses in which a run for an issue is still outstanding, so a new trigger
+ * for the same issue would duplicate it. `pending` is included: the run exists
+ * but its session creation is still in flight.
+ */
+export const UNFINISHED_STATUSES: RunStatus[] = [
+  "pending",
+  "working",
+  "blocked",
+  "needs_human_attention",
+];
 
 /** Statuses in which a run counts as waiting rather than progressing. */
 const BLOCKED_STATUSES: RunStatus[] = ["blocked", "needs_human_attention"];
@@ -383,6 +396,25 @@ export class SqliteRunStore implements RunStore {
     return runIds
       .map((runId) => this.getRun(runId))
       .filter((run): run is RunRecord => run !== undefined);
+  }
+
+  /**
+   * Most recent run for the issue that has not reached a terminal status.
+   * Survives process restarts and is shared by every instance pointing at the
+   * same database, which the in-memory dedupe caches cannot do.
+   */
+  findUnfinishedRunForIssue(issueRef: number): RunRecord | undefined {
+    const placeholders = UNFINISHED_STATUSES.map(() => "?").join(", ");
+    const row = this.db
+      .prepare(
+        `SELECT * FROM runs
+         WHERE issue_ref = ? AND status IN (${placeholders}) AND issue_closed_at IS NULL
+         ORDER BY detected_at DESC, rowid DESC
+         LIMIT 1`,
+      )
+      .get(issueRef, ...UNFINISHED_STATUSES) as RunRow | undefined;
+
+    return row ? toRecord(row) : undefined;
   }
 
   getRun(runId: string): RunRecord | undefined {

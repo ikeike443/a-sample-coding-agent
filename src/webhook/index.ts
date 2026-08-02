@@ -34,6 +34,10 @@ export async function registerWebhookRoutes(
 ): Promise<void> {
   const config = options.config ?? loadConfig();
   const deliveries = new TtlCache(config.webhookDedupeTtlMs);
+  // Second line of defence: GitHub can send the same logical trigger under
+  // several delivery ids (redelivery, retries, `labeled` plus a follow-up
+  // edit), which slips past the delivery-id cache and starts a duplicate run.
+  const triggers = new TtlCache(config.webhookTriggerIdempotencyTtlMs);
   const client = options.devinClient ?? createDevinClient(config);
   const dispatchDeps: DispatchDeps | undefined = client
     ? { client, maxAcuLimit: config.devinMaxAcuLimit }
@@ -98,6 +102,16 @@ export async function registerWebhookRoutes(
 
     if (!event.actionable) {
       return reply.code(200).send({ status: "ignored", reason: event.reason });
+    }
+
+    if (event.triggerKey !== undefined && triggers.seen(event.triggerKey)) {
+      request.log.info(
+        { deliveryId, event: eventName, triggerKey: event.triggerKey },
+        "duplicate trigger skipped",
+      );
+      return reply
+        .code(200)
+        .send({ status: "duplicate_trigger", deliveryId, triggerKey: event.triggerKey });
     }
 
     // Respond immediately; the dispatch runs outside the request lifecycle.

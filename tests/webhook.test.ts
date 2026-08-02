@@ -44,12 +44,15 @@ function post(options: PostOptions = {}) {
   return app.inject({ method: "POST", url: "/webhook/github", headers, payload });
 }
 
-function issuesLabeledPayload(label = "devin-remediate") {
+// A distinct issue per actionable delivery: the intake is idempotent per
+// (repository, issue, label), so reusing one issue makes the next one a
+// duplicate trigger.
+function issuesLabeledPayload(label = "devin-remediate", issueNumber = 42) {
   return {
     action: "labeled",
     label: { name: label },
     repository: { full_name: "ikeike443/a-sample-coding-agent" },
-    issue: { number: 42, labels: [{ name: label }] },
+    issue: { number: issueNumber, labels: [{ name: label }] },
   };
 }
 
@@ -84,7 +87,7 @@ describe("POST /webhook/github signature verification", () => {
 
 describe("POST /webhook/github event normalisation", () => {
   it("treats issues/labeled with the devin-remediate label as actionable", async () => {
-    const response = await post();
+    const response = await post({ payload: issuesLabeledPayload("devin-remediate", 101) });
 
     expect(response.json()).toMatchObject({ status: "accepted" });
   });
@@ -149,20 +152,37 @@ describe("POST /webhook/github deduplication", () => {
   it("skips a redelivery with the same delivery id", async () => {
     const deliveryId = "duplicate-delivery-id";
 
-    const first = await post({ deliveryId });
-    const second = await post({ deliveryId });
+    const payload = issuesLabeledPayload("devin-remediate", 102);
+    const first = await post({ deliveryId, payload });
+    const second = await post({ deliveryId, payload });
 
     expect(first.json()).toMatchObject({ status: "accepted" });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toMatchObject({ status: "duplicate", deliveryId });
   });
 
-  it("processes distinct delivery ids", async () => {
-    const first = await post({ deliveryId: "delivery-a" });
-    const second = await post({ deliveryId: "delivery-b" });
+  it("processes distinct delivery ids for distinct triggers", async () => {
+    const first = await post({
+      deliveryId: "delivery-a",
+      payload: issuesLabeledPayload("devin-remediate", 103),
+    });
+    const second = await post({
+      deliveryId: "delivery-b",
+      payload: issuesLabeledPayload("devin-remediate", 104),
+    });
 
     expect(first.json()).toMatchObject({ status: "accepted" });
     expect(second.json()).toMatchObject({ status: "accepted" });
+  });
+
+  it("skips a redelivery of the same trigger under a different delivery id", async () => {
+    const payload = issuesLabeledPayload("devin-remediate", 105);
+
+    const first = await post({ deliveryId: "delivery-105-a", payload });
+    const second = await post({ deliveryId: "delivery-105-b", payload });
+
+    expect(first.json()).toMatchObject({ status: "accepted" });
+    expect(second.json()).toMatchObject({ status: "duplicate_trigger" });
   });
 });
 

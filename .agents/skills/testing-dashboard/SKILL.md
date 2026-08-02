@@ -12,7 +12,7 @@ Node v22 is required for `better-sqlite3`: `export PATH=~/.nvm/versions/node/v22
 Use a **throwaway** database so real/seeded data from other sessions does not interfere:
 
 ```bash
-rm -f data/demo.sqlite
+rm -f data/demo.sqlite data/demo.sqlite-wal data/demo.sqlite-shm   # the store runs in WAL mode
 DATABASE_URL=file:./data/demo.sqlite npm run seed          # ~37 backdated fake runs, run ids `seed-*`, issues #900xxx
 GITHUB_WEBHOOK_SECRET=test-secret DATABASE_URL=file:./data/demo.sqlite LOG_LEVEL=info PORT=3000 \
   setsid nohup npm run dev > /tmp/server.log 2>&1 < /dev/null &
